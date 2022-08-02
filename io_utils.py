@@ -23,12 +23,13 @@ def delete_folder(path):
 
 
 @tf.function
-def extract_palette(image, channels=OUTPUT_CHANNELS, fill_until_size=256):
+def extract_palette(image, palette_ordering, channels=OUTPUT_CHANNELS):
     """
     Extracts the unique colors from an image (3D tensor)
     Parameters
     ----------
     image a 3D tensor with shape (height, width, channels)
+    palette_ordering either "grayness", "top2bottom", "bottom2top", or "shuffled"
     channels the number of channels of the image
 
     Returns a tensor of colors (RGB) sorted by the number of times each one appears and from dark to light as a
@@ -38,33 +39,28 @@ def extract_palette(image, channels=OUTPUT_CHANNELS, fill_until_size=256):
     # incoming image shape: (IMG_SIZE, IMG_SIZE, channels)
     # reshaping to: (IMG_SIZE*IMG_SIZE, channels)
     image = tf.cast(image, "int32")
-    # image = image[::-1, ::-1]  # sorting by appearance: bottom-right to top-left
     image = tf.reshape(image, [-1, channels])
-    colors, _, count = tf.raw_ops.UniqueWithCountsV2(x=image, axis=[0])
 
-    # colors = tf.reverse(colors, [0])  # sorting by appearance: last appeared color comes first
-    # colors = tf.random.shuffle(colors)  # shuffled colors
-    # sorts the colors by the amount of times it appeared
-    # indices_sorted_by_count = tf.argsort(count, direction="DESCENDING", stable=True)
-    # colors = tf.gather(colors, indices_sorted_by_count)
-
-    # sorts them again (stably) putting the darker tones first
-    # here, lightness is given by (max(r,g,b) + min(r,g,b)) / 2.0 (as in the RGB to HSL conversion)
-    # lightness = ((tf.reduce_max(colors, axis=-1) + tf.reduce_min(colors, axis=-1)) / 2)
-    # indices_sorted_by_lightness = tf.argsort(lightness, direction="ASCENDING", stable=True)
-    # colors = tf.gather(colors, indices_sorted_by_lightness)
-    # in_gray = tf.image.rgb_to_grayscale(colors)
-    gray_coefficients = tf.constant([0.2989, 0.5870, 0.1140, 0.])[..., tf.newaxis]
-    grayness = tf.squeeze(tf.matmul(tf.cast(colors, "float32"), gray_coefficients))
-    indices_sorted_by_grayness = tf.argsort(grayness, direction="ASCENDING", stable=True)
-    colors = tf.gather(colors, indices_sorted_by_grayness)
+    if palette_ordering == "top2bottom":
+        # the UniqueWithCountsV2 sweeps the image from the top-left to the bottom-right corner
+        colors, _, count = tf.raw_ops.UniqueWithCountsV2(x=image, axis=[0])
+    elif palette_ordering == "bottom2top":
+        image = image[::-1]  # sorting by appearance: bottom-right to top-left
+        colors, _, count = tf.raw_ops.UniqueWithCountsV2(x=image, axis=[0])
+    elif palette_ordering == "grayness":
+        colors, _, count = tf.raw_ops.UniqueWithCountsV2(x=image, axis=[0])
+        gray_coefficients = tf.constant([0.2989, 0.5870, 0.1140, 0.])[..., tf.newaxis]
+        grayness = tf.squeeze(tf.matmul(tf.cast(colors, "float32"), gray_coefficients))
+        indices_sorted_by_grayness = tf.argsort(grayness, direction="ASCENDING", stable=True)
+        colors = tf.gather(colors, indices_sorted_by_grayness)
+    else:  # shuffled
+        colors, _, count = tf.raw_ops.UniqueWithCountsV2(x=image, axis=[0])
+        colors = tf.random.shuffle(colors)
 
     # fills the palette to have 256 colors, so batches can be created (otherwise they can't, tf complains)
-    # TODO do something when the palette exceeds MAX_PALETTE_SIZE
     num_colors = tf.shape(colors)[0]
-    if fill_until_size is not None:
-        fillers = tf.repeat([INVALID_INDEX_COLOR], [MAX_PALETTE_SIZE - num_colors], axis=0)
-        colors = tf.concat([colors, fillers], axis=0)
+    fillers = tf.repeat([INVALID_INDEX_COLOR], [MAX_PALETTE_SIZE - num_colors], axis=0)
+    colors = tf.concat([colors, fillers], axis=0)
 
     return colors
 
@@ -79,7 +75,7 @@ def rgba_to_single_int(values_in_rgba):
     return converted
 
 
-# @tf.function
+@tf.function
 def rgba_to_indexed(image, palette):
     original_shape = tf.shape(image)
     flattened_image = tf.reshape(image, [-1, original_shape[-1]])
@@ -97,7 +93,6 @@ def rgba_to_indexed(image, palette):
     return indexed
 
 
-
 @tf.function
 def indexed_to_rgba(indexed_image, palette):
     image_shape = tf.shape(indexed_image)
@@ -106,6 +101,7 @@ def indexed_to_rgba(indexed_image, palette):
     # now the shape is (HEIGHT, WIDTH, 1, CHANNELS), so we need to reshape
     image_rgb = tf.reshape(image_rgb, [image_shape[0], image_shape[1], -1])
     return image_rgb
+
 
 def plot_to_image(matplotlib_figure, channels=OUTPUT_CHANNELS):
     """Converts the matplotlib plot specified by 'figure' to a PNG image and
@@ -122,61 +118,6 @@ def plot_to_image(matplotlib_figure, channels=OUTPUT_CHANNELS):
     # Add the batch dimension
     image = tf.expand_dims(image, 0)
     return image
-    
-
-
-
-
-
-
-
-# # generates images depicting what the discriminator thinks of a target image and a generated image - 
-# # how did it find each one's patches as real or fake
-# def generate_discriminated_image(input_image, target_image, discriminator, generator, invert_discriminator_value=False):
-#     generated_image = generator(input_image, training=True)
-
-#     discriminated_target_image = tf.math.sigmoid(tf.squeeze(discriminator([input_image, target_image], training=True), axis=[0]))
-#     discriminated_generated_image = tf.math.sigmoid(tf.squeeze(discriminator([input_image, generated_image], training=True), axis=[0]))
-#     if invert_discriminator_value:
-#         discriminated_target_image = 1. - discriminated_target_image 
-#         discriminated_generated_image = 1. - discriminated_generated_image 
-    
-#     # print(f"discriminated_target_image.shape {tf.shape(discriminated_target_image)}")
-
-#     patches = tf.shape(discriminated_target_image).numpy()[0]
-#     lower_bound_scaling_factor = IMG_SIZE // patches
-#     # print(f"lower_bound_scaling_factor {lower_bound_scaling_factor}, shape {tf.shape(discriminated_target_image).numpy()}")
-#     pad_before = (IMG_SIZE - patches*lower_bound_scaling_factor)//2
-#     pad_after = (IMG_SIZE - patches*lower_bound_scaling_factor) - pad_before
-#     # print(f"pad_before {pad_before}, pad_after {pad_after}")
-#     discriminated_target_image = tf.repeat(tf.repeat(discriminated_target_image, lower_bound_scaling_factor, axis=0), lower_bound_scaling_factor, axis=1)
-#     # print(f"discriminated_target_image.shape {tf.shape(discriminated_target_image)} - after repeat")
-#     discriminated_target_image = tf.pad(discriminated_target_image, [[pad_before, pad_after], [pad_before, pad_after], [0, 0]])
-#     # print(f"discriminated_target_image.shape {tf.shape(discriminated_target_image)} - after pad")
-
-#     discriminated_generated_image = tf.repeat(tf.repeat(discriminated_generated_image, lower_bound_scaling_factor, axis=0), lower_bound_scaling_factor, axis=1)
-#     discriminated_generated_image = tf.pad(discriminated_generated_image, [[pad_before, pad_after], [pad_before, pad_after], [0, 0]])
-
-#     generated_image = tf.squeeze(generated_image)
-#     target_image = tf.squeeze(target_image)
-
-
-#     figure = plt.figure(figsize=(6*2, 6*2))
-#     for i, (image, disc_output, image_label, output_label) in enumerate(zip([target_image, generated_image], [discriminated_target_image, discriminated_generated_image], ["Target", "Generated"], ["Discriminated target", "Discriminated generated"])):
-#         plt.subplot(2, 2, i*2 + 1)
-#         plt.title(image_label, fontdict={"fontsize": 20})
-#         plt.imshow(image * 0.5 + 0.5)
-#         plt.axis("off")
-
-#         plt.subplot(2, 2, i*2 + 2)
-#         plt.title(output_label, fontdict={"fontsize": 20})
-#         plt.imshow(disc_output, cmap="gray", vmin=0.0, vmax=1.0)
-#         plt.axis("off")
-
-    
-#     plt.show()
-#     # print(discriminated_generated_image)
-    
     
 
 def seconds_to_human_readable(time):

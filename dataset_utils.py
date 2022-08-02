@@ -70,8 +70,6 @@ def load_image(path, should_normalize=True):
         image = tf.reshape(image, (IMG_SIZE, IMG_SIZE, INPUT_CHANNELS))
         image = tf.cast(image, "float32")
         image = blacken_transparent_pixels(image)
-        if OUTPUT_CHANNELS == 3:
-            image = replace_alpha_with_white(image)
         if should_normalize:
             image = normalize(image)
     except UnicodeDecodeError:
@@ -123,16 +121,19 @@ def create_augmentation_with_prob(prob=0.8):
 
 
 def create_paired_s2s_image_loader_indexed_images(sprite_side_source, sprite_side_target, dataset_sizes,
-                                                  train_or_test_folder, should_augment=False):
+                                                  train_or_test_folder, palette_ordering):
     """
     Returns a function which takes an integer in the range of [0, DATASET_SIZE-1] and loads some image file
     from the corresponding dataset (using image_number and DATASET_SIZES to decide) representing images by
     its palette and indexed colors.
     """
+
     def load_indexed_images(dataset, image_number):
         folders = DIRECTION_FOLDERS
-        source_path = tf.strings.join([dataset, train_or_test_folder, folders[sprite_side_source], image_number + ".png"], os.sep)
-        target_path = tf.strings.join([dataset, train_or_test_folder, folders[sprite_side_target], image_number + ".png"], os.sep)
+        source_path = tf.strings.join(
+            [dataset, train_or_test_folder, folders[sprite_side_source], image_number + ".png"], os.sep)
+        target_path = tf.strings.join(
+            [dataset, train_or_test_folder, folders[sprite_side_target], image_number + ".png"], os.sep)
 
         source_image = tf.cast(load_image(source_path, should_normalize=False), "int32")
         target_image = tf.cast(load_image(target_path, should_normalize=False), "int32")
@@ -141,7 +142,7 @@ def create_paired_s2s_image_loader_indexed_images(sprite_side_source, sprite_sid
         concatenated_image = tf.concat([source_image, target_image], axis=-1)
 
         # finds the unique colors in both images
-        palette = io_utils.extract_palette(concatenated_image)
+        palette = io_utils.extract_palette(concatenated_image, palette_ordering)
 
         # converts source and target_images from RGB into indexed, using the extracted palette
         source_image = io_utils.rgba_to_indexed(source_image, palette)
@@ -176,6 +177,7 @@ def create_paired_s2s_image_loader(sprite_side_source, sprite_side_target, datas
     Returns a function which takes an integer in the range of [0, DATASET_SIZE-1] and loads some image file
     from the corresponding dataset (using image_number and DATASET_SIZES to decide).
     """
+
     def load_images(image_number):
         image_number = tf.cast(image_number, "int32")
 
@@ -186,7 +188,6 @@ def create_paired_s2s_image_loader(sprite_side_source, sprite_side_target, datas
         body = lambda which_image, which_dataset: [which_image - tf.gather(dataset_sizes, which_dataset),
                                                    which_dataset + 1]
         image_number, dataset_index = tf.while_loop(condition, body, [image_number, dataset_index])
-
 
         # gets the string pointing to the correct images
         dataset = tf.gather(DATA_FOLDERS, dataset_index)
@@ -200,8 +201,6 @@ def create_paired_s2s_image_loader(sprite_side_source, sprite_side_target, datas
             [dataset, os.sep, train_or_test_folder, os.sep, DIRECTION_FOLDERS[sprite_side_target], os.sep, image_number,
              ".png"]), False)
 
-
         return input_image, real_image
 
     return load_images
-

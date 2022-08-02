@@ -1,31 +1,30 @@
 import numpy as np
 from IPython import display
 from matplotlib import pyplot as plt
-from abc import abstractmethod
 
 import histogram
 import io_utils
 from networks import *
 from side2side_model import S2SModel
+from dataset_utils import create_paired_s2s_image_loader as create_rgba_image_loader
+from dataset_utils import create_augmentation_with_prob, normalize_two as normalize
+from dataset_utils import create_paired_s2s_image_loader_indexed_images as create_indexed_image_loader
 
 
 class Pix2PixModel(S2SModel):
-    def __init__(self, train_ds, test_ds, model_name, architecture_name,
-                 discriminator_type, generator_type, lambda_l1, lambda_histogram, **kwargs):
+    def __init__(self, input_direction, target_direction, model_name, architecture_name, lambda_l1):
+        train_ds, test_ds = self.load_datasets(input_direction, target_direction)
         super().__init__(train_ds, test_ds, model_name, architecture_name)
 
-        default_kwargs = {"num_patches": 30}
-        kwargs = {**default_kwargs, **kwargs}
-
         self.lambda_l1 = lambda_l1
-        self.lambda_histogram = lambda_histogram
 
-        self.generator = self.create_generator(generator_type)
-        self.discriminator = self.create_discriminator(discriminator_type, **kwargs)
+        self.generator = self.create_generator()
+        self.discriminator = self.create_discriminator()
         self.loss_object = tf.keras.losses.BinaryCrossentropy(from_logits=True)
 
         generator_params = tf.reduce_sum([tf.reduce_prod(v.get_shape()) for v in self.generator.trainable_weights])
-        discriminator_params = tf.reduce_sum([tf.reduce_prod(v.get_shape()) for v in self.discriminator.trainable_weights])
+        discriminator_params = tf.reduce_sum(
+            [tf.reduce_prod(v.get_shape()) for v in self.discriminator.trainable_weights])
 
         print(f"Generator: {self.generator.name} with {generator_params:,} parameters")
         print(f"Discriminator: {self.discriminator.name} with {discriminator_params:,} parameters")
@@ -40,6 +39,47 @@ class Pix2PixModel(S2SModel):
         self.checkpoint_manager = tf.train.CheckpointManager(self.checkpoint, directory=self.checkpoint_dir,
                                                              max_to_keep=5)
 
+    def load_datasets(self, input_direction, target_direction):
+        train_dataset = tf.data.Dataset.range(TRAIN_SIZE) \
+            .shuffle(TRAIN_SIZE) \
+            .map(create_rgba_image_loader(input_direction, target_direction, TRAIN_SIZES, "train"),
+                 num_parallel_calls=tf.data.AUTOTUNE) \
+            .map(normalize, num_parallel_calls=tf.data.AUTOTUNE) \
+            .batch(BATCH_SIZE)
+
+        test_dataset = tf.data.Dataset.range(TEST_SIZE) \
+            .shuffle(TEST_SIZE) \
+            .map(create_rgba_image_loader(input_direction, target_direction, TEST_SIZES, "test"),
+                 num_parallel_calls=tf.data.AUTOTUNE) \
+            .map(normalize, num_parallel_calls=tf.data.AUTOTUNE) \
+            .batch(BATCH_SIZE)
+
+        return train_dataset, test_dataset
+
+    def create_generator(self):
+        return UnetGenerator(4, 4, "tanh")
+
+    def create_discriminator(self):
+        return PatchDiscriminator(4)
+
+    def generator_loss(self, fake_predicted, fake_image, real_image):
+        adversarial_loss = self.loss_object(tf.ones_like(fake_predicted), fake_predicted)
+        l1_loss = tf.reduce_mean(tf.abs(real_image - fake_image))
+        total_loss = adversarial_loss + (self.lambda_l1 * l1_loss)
+
+        return total_loss, adversarial_loss, l1_loss
+
+    def discriminator_loss(self, real_predicted, fake_predicted):
+        real_loss = self.loss_object(tf.ones_like(real_predicted), real_predicted)
+        fake_loss = self.loss_object(tf.zeros_like(fake_predicted), fake_predicted)
+        total_loss = fake_loss + real_loss
+
+        return total_loss, real_loss, fake_loss
+
+    def generate(self, batch):
+        source_image, _ = batch
+        return self.generator(source_image, training=True)
+
     @tf.function
     def train_step(self, batch, step, update_steps):
         source_image, real_image = batch
@@ -50,91 +90,49 @@ class Pix2PixModel(S2SModel):
             real_predicted = self.discriminator([real_image, source_image], training=True)
             fake_predicted = self.discriminator([fake_image, source_image], training=True)
 
-            g_loss = self.generator_loss(fake_predicted, fake_image, real_image, tf.cast(step, "float32")/10000.)
-            generator_loss, generator_adversarial_loss, generator_l1_loss, generator_histogram_loss = g_loss
+            g_loss = self.generator_loss(fake_predicted, fake_image, real_image)
+            generator_total_loss = g_loss[0]
 
-            d_loss = self.discriminator_loss(real_predicted, fake_predicted, fake_image, real_image)
-            discriminator_loss, discriminator_real_loss, discriminator_fake_loss, _ = d_loss
+            d_loss = self.discriminator_loss(real_predicted, fake_predicted)
+            discriminator_total_loss = d_loss[0]
 
-        generator_gradients = tape.gradient(generator_loss, self.generator.trainable_variables)
-        discriminator_gradients = tape.gradient(discriminator_loss, self.discriminator.trainable_variables)
+        generator_gradients = tape.gradient(generator_total_loss, self.generator.trainable_variables)
+        discriminator_gradients = tape.gradient(discriminator_total_loss, self.discriminator.trainable_variables)
 
         self.generator_optimizer.apply_gradients(zip(generator_gradients, self.generator.trainable_variables))
         self.discriminator_optimizer.apply_gradients(
             zip(discriminator_gradients, self.discriminator.trainable_variables))
 
         with self.summary_writer.as_default():
-            with tf.name_scope("discriminator"):
-                tf.summary.scalar("total_loss", discriminator_loss, step=step // update_steps)
-                tf.summary.scalar("real_loss", discriminator_real_loss, step=step // update_steps)
-                tf.summary.scalar("fake_loss", discriminator_fake_loss, step=step // update_steps)
             with tf.name_scope("generator"):
-                tf.summary.scalar("total_loss", generator_loss, step=step // update_steps)
-                tf.summary.scalar("adversarial_loss", generator_adversarial_loss, step=step // update_steps)
-                tf.summary.scalar("l1_loss", generator_l1_loss, step=step // update_steps)
-                tf.summary.scalar("histogram_loss", generator_histogram_loss, step=step // update_steps)
+                self.log_generator_loss(g_loss, step // update_steps)
+            with tf.name_scope("discriminator"):
+                self.log_discriminator_loss(d_loss, step // update_steps)
 
-    def create_discriminator(self, discriminator_type, **kwargs):
-        if discriminator_type == "patch":
-            if "num_patches" not in kwargs:
-                raise ValueError(
-                    f"The 'num_patches' kw argument should have been passed to create_discriminator,"
-                    f"but it was not. kwargs: {kwargs}")
-            return PatchDiscriminator(kwargs["num_patches"])
-        elif discriminator_type == "patch-resnet":
-            return PatchResnetDiscriminator()
-        elif discriminator_type == "deeper":
-            return Deeper2x2PatchDiscriminator()
-        elif discriminator_type == "u-net" or discriminator_type == "unet":
-            return UnetDiscriminator()
-        elif discriminator_type == "indexed-patch":
-            return IndexedPatchDiscriminator(kwargs["num_patches"])
-        elif discriminator_type == "indexed-patch-resnet":
-            return IndexedPatchResnetDiscriminator()
-        else:
-            raise NotImplementedError(f"The {discriminator_type} type of discriminator has not been implemented")
+    def log_generator_loss(self, g_loss, step):
+        total_loss, adversarial_loss, l1_loss = g_loss
+        tf.summary.scalar("total_loss", total_loss, step=step)
+        tf.summary.scalar("adversarial_loss", adversarial_loss, step=step)
+        tf.summary.scalar("l1_loss", l1_loss, step=step)
 
-    def create_generator(self, generator_type, **kwargs):
-        if generator_type == "u-net" or generator_type == "unet":
-            return UnetGenerator()
-        elif generator_type == "atrous":
-            raise NotImplementedError(f"The {generator_type} type of generator has not been implemented")
-        elif generator_type == "indexed-unet":
-            return IndexedUnetGenerator()
-        else:
-            raise NotImplementedError(f"The {generator_type} type of generator has not been implemented")
+    def log_discriminator_loss(self, d_loss, step):
+        total_loss, real_loss, fake_loss = d_loss
+        tf.summary.scalar("total_loss", total_loss, step=step)
+        tf.summary.scalar("real_loss", real_loss, step=step)
+        tf.summary.scalar("fake_loss", fake_loss, step=step)
 
-    def generator_loss(self, fake_predicted, fake_image, real_image, training_t):
-        adversarial_loss = self.loss_object(tf.ones_like(fake_predicted), fake_predicted)
-        l1_loss = tf.reduce_mean(tf.abs(real_image - fake_image))
-
-        # real_histogram = histogram.calculate_rgbuv_histogram(real_image)
-        # fake_histogram = histogram.calculate_rgbuv_histogram(fake_image)
-        # histogram_loss = histogram.hellinger_loss(real_histogram, fake_histogram)
-        histogram_loss = tf.constant(0., "float32")
-        total_loss = adversarial_loss + (self.lambda_l1 * l1_loss) + (self.lambda_histogram * histogram_loss)
-
-        return total_loss, adversarial_loss, l1_loss, histogram_loss
-
-    def discriminator_loss(self, real_predicted, fake_predicted, fake_image, real_image):
-        real_loss = self.loss_object(tf.ones_like(real_predicted), real_predicted)
-        fake_loss = self.loss_object(tf.zeros_like(fake_predicted), fake_predicted)
-        total_loss = fake_loss + real_loss
-
-        return total_loss, real_loss, fake_loss
-
-    def select_examples_for_visualization(self, num_examples=6):
-        num_train_examples = num_examples // 2
-        num_test_examples = num_examples - num_train_examples
+    def select_examples_for_visualization(self, number_of_examples=6):
+        num_train_examples = number_of_examples // 2
+        num_test_examples = number_of_examples - num_train_examples
 
         train_examples = self.train_ds.unbatch().take(num_train_examples).batch(1)
         test_examples = self.test_ds.unbatch().take(num_test_examples).batch(1)
 
         return list(test_examples.as_numpy_iterator()) + list(train_examples.as_numpy_iterator())
 
-    def select_real_and_fake_images_for_fid(self, num_images, dataset):
-        real_images = np.ndarray((num_images, IMG_SIZE, IMG_SIZE, OUTPUT_CHANNELS))
-        fake_images = np.ndarray((num_images, IMG_SIZE, IMG_SIZE, OUTPUT_CHANNELS))
+    def select_examples_for_evaluation(self, num_images, dataset):
+        real_images = np.ndarray((num_images, IMG_SIZE, IMG_SIZE, 4))
+        fake_images = np.ndarray((num_images, IMG_SIZE, IMG_SIZE, 4))
         dataset = dataset.unbatch().take(num_images).batch(1)
 
         for i, (source_image, real_image) in dataset.enumerate():
@@ -147,8 +145,7 @@ class Pix2PixModel(S2SModel):
     def evaluate_l1(self, real_images, fake_images):
         return tf.reduce_mean(tf.abs(fake_images - real_images))
 
-    def generate_comparison(self, examples, save_name=None, step=None, predicted_images=None):
-        # invoca o gerador e mostra a imagem de entrada, sua imagem objetivo e a imagem gerada
+    def preview_generated_images_during_training(self, examples, save_name=None, step=None, predicted_images=None):
         title = ["Input", "Target", "Generated"]
         num_images = len(examples)
         num_columns = len(title)
@@ -185,14 +182,13 @@ class Pix2PixModel(S2SModel):
 
         return figure
 
-    def show_discriminated_image(self, batch_of_one):
+    def debug_discriminator_patches(self, batch_of_one):
         # generates the fake image and the discriminations of the real and fake
         source_image, real_image = batch_of_one
         fake_image = self.generator(source_image, training=True)
 
         real_predicted = self.discriminator([real_image, source_image])
         fake_predicted = self.discriminator([fake_image, source_image])
-        desired_fake_prediction = self.calculate_desired_fake_prediction(fake_image, real_image, fake_predicted)
         real_predicted = real_predicted[0]
         fake_predicted = fake_predicted[0]
 
@@ -202,7 +198,6 @@ class Pix2PixModel(S2SModel):
         # finds the mean value of the patches (to display on the titles)
         real_predicted_mean = tf.reduce_mean(real_predicted)
         fake_predicted_mean = tf.reduce_mean(fake_predicted)
-        desired_fake_prediction_mean = tf.reduce_mean(desired_fake_prediction)
 
         # makes the patches have the same resolution as the real/fake images by repeating and tiling
         num_patches = tf.shape(real_predicted)[0]
@@ -221,10 +216,9 @@ class Pix2PixModel(S2SModel):
         real_image = real_image[0]
         fake_image = fake_image[0]
         source_image = source_image[0]
-        desired_fake_prediction = desired_fake_prediction[0]
 
-        # display the images: source / real / discr. real / fake / discr. fake / desired discr. fake
-        plt.figure(figsize=(6 * 6, 6 * 1))
+        # display the images: source / real / discr. real / fake / discr. fake
+        plt.figure(figsize=(6 * 5, 6 * 1))
         plt.subplot(1, 6, 1)
         plt.title("Source", fontdict={"fontsize": 20})
         plt.imshow(source_image * 0.5 + 0.5)
@@ -254,91 +248,151 @@ class Pix2PixModel(S2SModel):
         plt.imshow(fake_predicted, cmap="gray", vmin=0.0, vmax=1.0)
         plt.axis("off")
 
-        plt.subplot(1, 6, 6)
-        plt.title(tf.strings.reduce_join([
-            "Desired disc. output ",
-            tf.strings.as_string(desired_fake_prediction_mean, precision=3)]).numpy().decode("UTF-8"),
-                  fontdict={"fontsize": 20})
-        plt.imshow(desired_fake_prediction, cmap="gray", vmin=0.0, vmax=1.0)
-        plt.axis("off")
-
         plt.show()
 
 
-class Pix2PixIndexedModel(Pix2PixModel):
-    def __init__(self, train_ds, test_ds, model_name, architecture_name,
-                 discriminator_type, generator_type, lambda_l1=100., lambda_segmentation=0.5, **kwargs):
-        super().__init__(train_ds, test_ds, model_name, architecture_name,
-                         discriminator_type, generator_type, lambda_l1, **kwargs)
-        self.lambda_segmentation = lambda_segmentation
-        self.loss_object = tf.keras.losses.BinaryCrossentropy(from_logits=True)
-        self.generator_loss_object = tf.keras.losses.CategoricalCrossentropy(from_logits=False)
+class Pix2PixAugmentedModel(Pix2PixModel):
+    def __init__(self, input_direction, target_direction, model_name, architecture_name, lambda_l1):
+        super().__init__(input_direction, target_direction, model_name, architecture_name, lambda_l1)
+
+    def load_datasets(self, input_direction, target_direction):
+        train_dataset = tf.data.Dataset \
+            .range(TRAIN_SIZE) \
+            .shuffle(TRAIN_SIZE) \
+            .map(create_rgba_image_loader(input_direction, target_direction, TRAIN_SIZES, "train"),
+                 num_parallel_calls=tf.data.AUTOTUNE) \
+            .map(create_augmentation_with_prob(0.8), num_parallel_calls=tf.data.AUTOTUNE) \
+            .map(normalize, num_parallel_calls=tf.data.AUTOTUNE) \
+            .batch(BATCH_SIZE)
+
+        test_dataset = tf.data.Dataset.range(TEST_SIZE) \
+            .shuffle(TEST_SIZE) \
+            .map(create_rgba_image_loader(input_direction, target_direction, TEST_SIZES, "test"),
+                 num_parallel_calls=tf.data.AUTOTUNE) \
+            .map(normalize, num_parallel_calls=tf.data.AUTOTUNE) \
+            .batch(BATCH_SIZE)
+
+        return train_dataset, test_dataset
+
+
+class Pix2PixHistogramModel(Pix2PixAugmentedModel):
+    def __init__(self, input_direction, target_direction, model_name, architecture_name, lambda_l1, lambda_histogram):
+        super().__init__(input_direction, target_direction, model_name, architecture_name, lambda_l1)
+        self.lambda_histogram = lambda_histogram
 
     def generator_loss(self, fake_predicted, fake_image, real_image):
-        adversarial_loss = self.loss_object(tf.ones_like(fake_predicted), fake_predicted)
-        l1_loss = tf.reduce_mean(tf.abs(real_image - fake_image))
-        segmentation_loss = self.generator_loss_object(real_image, fake_image)
-        total_loss = adversarial_loss + (self.lambda_l1 * l1_loss) + (self.lambda_segmentation * segmentation_loss)
+        real_histogram = histogram.calculate_rgbuv_histogram(real_image)
+        fake_histogram = histogram.calculate_rgbuv_histogram(fake_image)
+        histogram_loss = histogram.hellinger_loss(real_histogram, fake_histogram)
+
+        total_loss, adversarial_loss, l1_loss = super().generator_loss(fake_predicted, fake_image, real_image)
+        total_loss += self.lambda_histogram * histogram_loss
+
+        return total_loss, adversarial_loss, l1_loss, histogram_loss
+
+    def discriminator_loss(self, real_predicted, fake_predicted):
+        return super().discriminator_loss(real_predicted, fake_predicted)
+
+    def log_generator_loss(self, g_loss, step):
+        _, _, _, histogram_loss = g_loss
+        super().log_generator_loss(g_loss[:3], step)
+        tf.summary.scalar("histogram_loss", histogram_loss, step=step)
+
+
+class Pix2PixIndexedModel(Pix2PixModel):
+    def __init__(self, input_direction, target_direction, model_name, architecture_name,
+                 palette_ordering, lambda_segmentation=0.5):
+        self.palette_ordering = palette_ordering
+        super().__init__(input_direction, target_direction, model_name, architecture_name, 0.)
+        self.lambda_segmentation = lambda_segmentation
+        self.segmentation_loss_object = tf.keras.losses.CategoricalCrossentropy(from_logits=False)
+
+    def load_datasets(self, input_direction, target_direction):
+        ordering = self.palette_ordering
+        train_dataset = tf.data.Dataset.range(TRAIN_SIZE) \
+            .shuffle(TRAIN_SIZE) \
+            .map(create_indexed_image_loader(input_direction, target_direction, TRAIN_SIZES, "train", ordering),
+                 num_parallel_calls=tf.data.AUTOTUNE) \
+            .batch(BATCH_SIZE)
+
+        test_dataset = tf.data.Dataset.range(TEST_SIZE) \
+            .shuffle(TEST_SIZE) \
+            .map(create_indexed_image_loader(input_direction, target_direction, TEST_SIZES, "test", ordering),
+                 num_parallel_calls=tf.data.AUTOTUNE) \
+            .batch(BATCH_SIZE)
+
+        return train_dataset, test_dataset
+
+    def create_generator(self):
+        return UnetGenerator(1, MAX_PALETTE_SIZE, "softmax")
+
+    def create_discriminator(self):
+        return PatchDiscriminator(1)
+
+    def generator_loss(self, fake_predicted, fake_image, real_image):
+        segmentation_loss = self.segmentation_loss_object(real_image, fake_image)
+        total_loss, adversarial_loss, l1_loss = super().generator_loss(fake_predicted, fake_image, real_image)
+        total_loss += self.lambda_segmentation * segmentation_loss
 
         return total_loss, adversarial_loss, l1_loss, segmentation_loss
 
     def discriminator_loss(self, real_predicted, fake_predicted):
-        real_loss = self.loss_object(tf.ones_like(real_predicted), real_predicted)
-        fake_loss = self.loss_object(tf.zeros_like(fake_predicted), fake_predicted)
-        total_loss = real_loss + fake_loss
+        return super().discriminator_loss(real_predicted, fake_predicted)
 
-        return total_loss, real_loss, fake_loss
+    def generate(self, batch):
+        source_image, _, palette = batch
+        fake_image_probabilities = self.generator(source_image, training=True)
+        fake_image = tf.expand_dims(tf.argmax(fake_image_probabilities, axis=-1, output_type="int32"), -1)
+        return fake_image
+
+    def generate_with_probs(self, batch):
+        source_image, _, palette = batch
+        fake_image_probabilities = self.generator(source_image, training=True)
+        fake_image = tf.expand_dims(tf.argmax(fake_image_probabilities, axis=-1, output_type="int32"), -1)
+        return fake_image, fake_image_probabilities
 
     def train_step(self, batch, step, update_steps):
-        source_image, real_image, palette = batch
-        batch_size = tf.shape(source_image)[0]
+        # batch: source_image, real_image, palette
+        source_image, real_image, _ = batch
+        batch_size = tf.shape(real_image)[0]
 
-        real_image_one_hot = tf.reshape(tf.one_hot(real_image, MAX_PALETTE_SIZE, axis=-1), [batch_size, IMG_SIZE, IMG_SIZE, -1])
-
+        real_image_one_hot = tf.reshape(tf.one_hot(real_image, MAX_PALETTE_SIZE, axis=-1),
+                                        [batch_size, IMG_SIZE, IMG_SIZE, -1])
         with tf.GradientTape(persistent=True) as tape:
-            fake_image = self.generator(source_image, training=True)
-            fake_image_for_discriminator = tf.expand_dims(tf.argmax(fake_image, axis=-1, output_type="int32"), -1)
+            fake_image, fake_image_probabilities = self.generate_with_probs(batch)
 
             real_predicted = self.discriminator([real_image, source_image], training=True)
-            fake_predicted = self.discriminator([fake_image_for_discriminator, source_image], training=True)
+            fake_predicted = self.discriminator([fake_image, source_image], training=True)
 
-            generator_loss, generator_adversarial_loss, generator_l1_loss, generator_segmentation_loss = \
-                self.generator_loss(fake_predicted, fake_image, real_image_one_hot)
-            discriminator_loss, discriminator_real_loss, discriminator_fake_loss = self.discriminator_loss(
-                real_predicted, fake_predicted)
+            g_loss = self.generator_loss(fake_predicted, fake_image_probabilities, real_image_one_hot)
+            generator_total_loss = g_loss[0]
 
-        discriminator_gradients = tape.gradient(discriminator_loss, self.discriminator.trainable_variables)
-        generator_gradients = tape.gradient(generator_loss, self.generator.trainable_variables)
+            d_loss = self.discriminator_loss(real_predicted, fake_predicted)
+            discriminator_total_loss = d_loss[0]
+
+        generator_gradients = tape.gradient(generator_total_loss, self.generator.trainable_variables)
+        discriminator_gradients = tape.gradient(discriminator_total_loss, self.discriminator.trainable_variables)
 
         self.generator_optimizer.apply_gradients(zip(generator_gradients, self.generator.trainable_variables))
         self.discriminator_optimizer.apply_gradients(
             zip(discriminator_gradients, self.discriminator.trainable_variables))
 
         with self.summary_writer.as_default():
-            with tf.name_scope("discriminator"):
-                tf.summary.scalar("total_loss", discriminator_loss, step=step // update_steps)
-                tf.summary.scalar("real_loss", discriminator_real_loss, step=step // update_steps)
-                tf.summary.scalar("fake_loss", discriminator_fake_loss, step=step // update_steps)
             with tf.name_scope("generator"):
-                tf.summary.scalar("total_loss", generator_loss, step=step // update_steps)
-                tf.summary.scalar("adversarial_loss", generator_adversarial_loss, step=step // update_steps)
-                tf.summary.scalar("l1_loss", generator_l1_loss, step=step // update_steps)
-                tf.summary.scalar("segmentation_loss", generator_segmentation_loss, step=step // update_steps)
+                self.log_generator_loss(g_loss, step // update_steps)
+            with tf.name_scope("discriminator"):
+                self.log_discriminator_loss(d_loss, step // update_steps)
 
-    def select_examples_for_visualization(self, num_examples=6):
-        num_train_examples = num_examples // 2
-        num_test_examples = num_examples - num_train_examples
+    def log_generator_loss(self, g_loss, step):
+        _, _, _, segmentation_loss = g_loss
+        super().log_generator_loss(g_loss[:3], step)
+        tf.summary.scalar("segmentation_loss", segmentation_loss, step=step)
 
-        test_examples = self.test_ds.unbatch().take(num_test_examples).batch(1)
-        train_examples = self.train_ds.unbatch().take(num_train_examples).batch(1)
-        return list(test_examples.as_numpy_iterator()) + list(train_examples.as_numpy_iterator())
-
-    def generate_comparison(self, examples, save_name=None, step=None, predicted_images=None):
-        # invoca o gerador e mostra a imagem de entrada, sua imagem objetivo e a imagem gerada
-        num_images = len(examples)
-        num_columns = 3
-
+    def preview_generated_images_during_training(self, examples, save_name=None, step=None, predicted_images=None):
         title = ["Input", "Target", "Generated"]
+        num_images = len(examples)
+        num_columns = len(title)
+
         if step is not None:
             title[-1] += f" ({step / 1000}k)"
 
@@ -347,14 +401,12 @@ class Pix2PixIndexedModel(Pix2PixModel):
         if predicted_images is None:
             predicted_images = []
 
-        for i, (source_image, target_image, palette) in enumerate(examples):
+        for i, batch in enumerate(examples):
+            source_image, target_image, palette = batch
             palette = palette[0]
 
             if i >= len(predicted_images):
-                generated_image = self.generator(source_image, training=True)
-                # tf.print("tf.shape(generated_image)", tf.shape(generated_image))
-                generated_image = tf.expand_dims(tf.argmax(generated_image, axis=-1, output_type="int32"), -1)
-                # tf.print("tf.shape(generated_image) after argmax", tf.shape(generated_image))
+                generated_image = self.generate(batch)
                 predicted_images.append(generated_image)
 
             images = [source_image, target_image, predicted_images[i]]
@@ -379,7 +431,7 @@ class Pix2PixIndexedModel(Pix2PixModel):
 
         return figure
 
-    def show_discriminated_image(self, batch_of_one):
+    def debug_discriminator_patches(self, batch_of_one):
         # generates the fake image and the discriminations of the real and fake
         source_image, real_image, palette = batch_of_one
 
@@ -415,14 +467,14 @@ class Pix2PixIndexedModel(Pix2PixModel):
         fake_image = io_utils.indexed_to_rgba(fake_image, palette)
 
         # display the images: real / discr. real / fake / discr. fake
-        figure = plt.figure(figsize=(6 * 4, 6 * 1))
+        plt.figure(figsize=(6 * 4, 6 * 1))
         plt.subplot(1, 4, 1)
-        plt.title("Label", fontdict={"fontsize": 20})
+        plt.title("Target", fontdict={"fontsize": 20})
         plt.imshow(real_image, vmin=0, vmax=255)
         plt.axis("off")
 
         plt.subplot(1, 4, 2)
-        plt.title("Discriminated label", fontdict={"fontsize": 20})
+        plt.title("Discriminated target", fontdict={"fontsize": 20})
         plt.imshow(real_predicted, cmap="gray", vmin=0.0, vmax=1.0)
         plt.axis("off")
 
@@ -438,14 +490,14 @@ class Pix2PixIndexedModel(Pix2PixModel):
 
         plt.show()
 
-    def select_real_and_fake_images_for_fid(self, num_images, dataset):
-        real_images = np.ndarray((num_images, IMG_SIZE, IMG_SIZE, OUTPUT_CHANNELS))
-        fake_images = np.ndarray((num_images, IMG_SIZE, IMG_SIZE, OUTPUT_CHANNELS))
+    def select_examples_for_evaluation(self, num_images, dataset):
+        real_images = np.ndarray((num_images, IMG_SIZE, IMG_SIZE, 4))
+        fake_images = np.ndarray((num_images, IMG_SIZE, IMG_SIZE, 4))
         dataset = dataset.unbatch().take(num_images).batch(1)
 
-        for i, (source_image, real_image, palette) in dataset.enumerate():
-            fake_image = self.generator(source_image, training=True)
-            fake_image = tf.expand_dims(tf.argmax(fake_image, axis=-1, output_type="int32"), -1)
+        for i, batch in dataset.enumerate():
+            source_image, real_image, palette = batch
+            fake_image = self.generate(batch)
 
             real_image = real_image[0]
             fake_image = fake_image[0]

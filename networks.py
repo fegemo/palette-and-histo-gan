@@ -33,79 +33,62 @@ def unet_upsample(filters, size, apply_dropout=False, init=tf.random_normal_init
 
     result.add(layers.ReLU())
 
-    
     return result
 
 
-def PatchDiscriminator():
+def PatchDiscriminator(input_channels):
     initializer = tf.random_normal_initializer(0., 0.02)
 
-    source_image = layers.Input(shape=[IMG_SIZE, IMG_SIZE, OUTPUT_CHANNELS], name="source_image")
-    target_image = layers.Input(shape=[IMG_SIZE, IMG_SIZE, OUTPUT_CHANNELS], name="target_image")
+    source_image = layers.Input(shape=[IMG_SIZE, IMG_SIZE, input_channels], name="source_image")
+    target_image = layers.Input(shape=[IMG_SIZE, IMG_SIZE, input_channels], name="target_image")
 
-    x = layers.concatenate([target_image, source_image])  # (batch_size, 64, 64, channels*2)
-
-    down = unet_downsample(64, 4, False)(x)  # (batch_size, 32, 32, 64)
-    last = layers.Conv2D(1, 4, padding="same",
-                            kernel_initializer=initializer)(down)  # (batch_size, 32, 32, 1)
+    x = layers.concatenate([target_image, source_image])                            # (batch_size, 64, 64, channels*2)
+    down = unet_downsample(64, 4, False)(x)                                         # (batch_size, 32, 32,         64)
+    last = layers.Conv2D(1, 4, padding="same",                                      # (batch_size, 32, 32,          1)
+                         kernel_initializer=initializer)(down)
 
     return tf.keras.Model(inputs=[target_image, source_image], outputs=last, name="patch-disc")
 
 
-def IndexedPatchDiscriminator():
-    initializer = tf.random_normal_initializer(0., 0.02)
-
-    source_image = layers.Input(shape=[IMG_SIZE, IMG_SIZE, 1], name="source_image")
-    target_image = layers.Input(shape=[IMG_SIZE, IMG_SIZE, 1], name="target_image")
-
-    x = layers.concatenate([target_image, source_image])  # (batch_size, 64, 64, 2)
-
-    down = unet_downsample(64, 4, False)(x)  # (batch_size, 32, 32, 64)
-    last = layers.Conv2D(1, 4, strides=1, kernel_initializer=initializer)(down)  # (batch_size, 30, 30, 1)
-
-    return tf.keras.Model(inputs=[target_image, source_image], outputs=last, name="indexed-patch-disc")
-
-
-def UnetGenerator():
+def UnetGenerator(input_channels, output_channels, last_activation):
     init = tf.random_normal_initializer(0., 0.02)
-    inputs = layers.Input(shape=[IMG_SIZE, IMG_SIZE, OUTPUT_CHANNELS]) #(batch_size, 64, 64, 4)
+    inputs = layers.Input(shape=[IMG_SIZE, IMG_SIZE, input_channels])               # (batch_size, 64, 64, 4 or 1)
 
     down_stack = [
-        unet_downsample( 64, 4, apply_batchnorm=False, init=init),  # (batch_size, 32, 32,   64)
-        unet_downsample(128, 4, init=init),                         # (batch_size, 16, 16,  128)
-        unet_downsample(256, 4, init=init),                         # (batch_size,  8,  8,  256)
-        unet_downsample(512, 4, init=init),                         # (batch_size,  4,  4,  512)
-        unet_downsample(512, 4, init=init),                         # (batch_size,  2,  2,  512)
-        unet_downsample(512, 4, init=init),                         # (batch_size,  1,  1,  512)
+        unet_downsample( 64, 4, apply_batchnorm=False, init=init),                  # (batch_size, 32, 32,   64)
+        unet_downsample(128, 4, init=init),                                         # (batch_size, 16, 16,  128)
+        unet_downsample(256, 4, init=init),                                         # (batch_size,  8,  8,  256)
+        unet_downsample(512, 4, init=init),                                         # (batch_size,  4,  4,  512)
+        unet_downsample(512, 4, init=init),                                         # (batch_size,  2,  2,  512)
+        unet_downsample(512, 4, init=init),                                         # (batch_size,  1,  1,  512)
     ]
 
     up_stack = [
-        unet_upsample(512, 4, apply_dropout=True, init=init),       # (batch_size,  2,  2, 1024)
-        unet_upsample(512, 4, apply_dropout=True, init=init),       # (batch_size,  4,  4, 1024)
-        unet_upsample(256, 4, apply_dropout=True, init=init),       # (batch_size,  8,  8,  512)
-        unet_upsample(128, 4, init=init),                           # (batch_size, 16, 16,  256)
-        unet_upsample( 64, 4, init=init),                           # (batch_size, 32, 32,  128)
-        unet_upsample( 32, 4, init=init),                           # (batch_size, 64, 64,   36)
+        unet_upsample(512, 4, apply_dropout=True, init=init),                       # (batch_size,  2,  2, 1024)
+        unet_upsample(512, 4, apply_dropout=True, init=init),                       # (batch_size,  4,  4, 1024)
+        unet_upsample(256, 4, apply_dropout=True, init=init),                       # (batch_size,  8,  8,  512)
+        unet_upsample(128, 4, init=init),                                           # (batch_size, 16, 16,  256)
+        unet_upsample( 64, 4, init=init),                                           # (batch_size, 32, 32,  128)
+        unet_upsample( 32, 4, init=init),                                           # (batch_size, 64, 64,   36)
     ]
 
-    last = layers.Conv2D(OUTPUT_CHANNELS, 4,
-                                     strides=1,
-                                     padding="same",
-                                     kernel_initializer=init,
-                                     activation="tanh")  # (batch_size, 64, 64, 4)
+    last = layers.Conv2D(output_channels, 4,                                        # (batch_size, 64, 64, 4 or 256)
+                         padding="same",
+                         kernel_initializer=init,
+                         activation=last_activation)
 
     x = inputs
 
-    # downsampling e adicionando as skip-connections
+    # executing down sampling and saving the skip-connections
     skips = []
     for down in down_stack:
         x = down(x)
         skips.append(x)
 
-    # ignora a última skip e inverte a ordem
+    # ignores the last skip and reverses them
     skips = list(reversed(skips[:-1]))
 
-    # camadas de upsampling e skip connections
+    # up samples and concatenates the partial results from skips
     for up, skip in zip(up_stack, [*skips, inputs]):
         x = up(x)
         x = layers.Concatenate()([x, skip])
@@ -113,54 +96,3 @@ def UnetGenerator():
     x = last(x)
 
     return tf.keras.Model(inputs=inputs, outputs=x, name="unet-gen")
-
-
-def IndexedUnetGenerator():
-    init = tf.random_normal_initializer(0., 0.02)
-    inputs = layers.Input(shape=[IMG_SIZE, IMG_SIZE, 1], name="input_image") #(batch_size, 64, 64, 1)
-
-    down_stack = [
-        unet_downsample( 32, 4, apply_batchnorm=False, init=init),  # (batch_size, 32, 32,   64)
-        unet_downsample( 64, 4, init=init),                         # (batch_size, 16, 16,  128)
-        unet_downsample(128, 4, init=init),                         # (batch_size,  8,  8,  256)
-        unet_downsample(256, 4, init=init),                         # (batch_size,  4,  4,  512)
-        unet_downsample(512, 4, init=init),                         # (batch_size,  2,  2,  512)
-        unet_downsample(512, 4, init=init),                         # (batch_size,  1,  1,  512)
-    ]
-
-    up_stack = [
-        unet_upsample(512, 4, apply_dropout=True, init=init),       # (batch_size,  2,  2, 1024)
-        unet_upsample(256, 4, apply_dropout=True, init=init),       # (batch_size,  4,  4, 1024)
-        unet_upsample(128, 4, apply_dropout=True, init=init),       # (batch_size,  8,  8,  512)
-        unet_upsample( 64, 4, init=init),       # (batch_size, 16, 16,  256)
-        unet_upsample( 64, 4, init=init),       # (batch_size, 32, 32,  128)
-        unet_upsample(128, 4, init=init),       # (batch_size, 64, 64,   64)
-    ]
-
-    last = layers.Conv2D(MAX_PALETTE_SIZE, 4,
-                                     strides=1,
-                                     padding="same",
-                                     kernel_initializer=init,
-                                     activation="softmax"
-                         )  # (batch_size, 64, 64, 4)
-
-    x = inputs
-
-    # downsampling e adicionando as skip-connections
-    skips = []
-    for down in down_stack:
-        x = down(x)
-        skips.append(x)
-
-    # ignora a última skip e inverte a ordem
-    skips = list(reversed(skips[:-1]))
-
-    # camadas de upsampling e skip connections
-    for up, skip in zip(up_stack, [*skips, inputs]):
-        x = up(x)
-        x = layers.Concatenate()([x, skip])
-
-    x = last(x)
-
-    return tf.keras.Model(inputs=inputs, outputs=x)
-

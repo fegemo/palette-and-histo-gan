@@ -1,7 +1,6 @@
 from abc import ABC, abstractmethod
 import tensorflow as tf
 from tensorboard.plugins.custom_scalar import layout_pb2, summary as cs_summary
-# from tensorboard.summary.v1 import custom_scalar_pb
 import time
 import datetime
 from IPython import display
@@ -40,6 +39,10 @@ class S2SModel(ABC):
         self.generator = None
         self.discriminator = None
 
+        self.summary_writer = None
+        self.now_string = None
+        self.log_folders = None
+
         self.train_ds = train_ds
         self.test_ds = test_ds
         self.model_name = model_name
@@ -47,9 +50,6 @@ class S2SModel(ABC):
         self.checkpoint_dir = os.sep.join(
             [TEMP_FOLDER, "training-checkpoints", self.architecture_name, self.model_name])
         self.layout_summary = S2SModel.create_layout_summary()
-
-    def predict(self, images, **kwargs):
-        pass
 
     def fit(self, steps, update_steps, callbacks=[], starting_step=0):
         if starting_step == 0:
@@ -70,11 +70,8 @@ class S2SModel(ABC):
         training_start_time = time.time()
         step_start_time = training_start_time
 
-        # try:
-        #     tf.profiler.experimental.start("tblogdir")
         for step, batch in self.train_ds.repeat().take(steps).enumerate():
             step += starting_step
-            # with tf.profiler.experimental.Trace("train", step_num=step):
 
             # every UPDATE_STEPS and in the beginning, visualize 5x images to see
             # how training is going...
@@ -90,24 +87,24 @@ class S2SModel(ABC):
                     save_image_name = os.sep.join(
                         [TEMP_FOLDER, "logs", self.architecture_name, self.model_name, self.now_string,
                          "step_{:06d}.png".format(step + 1)])
-                    image_data = self.generate_comparison(examples, save_image_name, step + 1)
+                    print(f"Previewing images generated at step {step + 1} (3 train + 3 test)...")
+                    image_data = self.preview_generated_images_during_training(examples, save_image_name, step + 1)
                     image_data = io_utils.plot_to_image(image_data)
                     tf.summary.image(save_image_name, image_data, step=(step + 1) // update_steps, max_outputs=5)
 
-                if "show_patches" in callbacks:
-                    print("Showing discriminator patches...")
-                    self.show_discriminated_images("test")
-                    self.show_discriminated_images("train")
-                if "l1" in callbacks:
+                if "show_discriminator_output" in callbacks:
+                    print("Showing discriminator output patches (2 train + 2 test)...")
+                    self.show_discriminated_images("test", 2)
+                    self.show_discriminated_images("train", 2)
+                if "evaluate_l1" in callbacks:
                     print(f"Comparing L1 between generated images from train and test...", end="", flush=True)
                     l1_train, l1_test = self.report_l1(step=(step + 1) // update_steps)
                     print(f" L1: {l1_train:.5f} / {l1_test:.5f} (train/test)")
-                if "fid" in callbacks:
+                if "evaluate_fid" in callbacks:
                     print(
-                        f"Calculating Fréchet Inception Distance at {(step + 1) / 1000}k with {TEST_SIZE} examples...",
-                        end="", flush=True)
+                        f"Calculating Fréchet Inception Distance at {(step + 1) / 1000}k with {TEST_SIZE} examples...")
                     train_fid, test_fid = self.report_fid(step=(step + 1) // update_steps)
-                    print(f" FID: {train_fid:.3f} / {test_fid:.3f} (train/test)")
+                    print(f"FID: {train_fid:.3f} / {test_fid:.3f} (train/test)")
 
                 print(f"Step: {(step + 1) / 1000}k")
                 if step - starting_step < steps - 1:
@@ -124,26 +121,20 @@ class S2SModel(ABC):
             if (step + 1) % (update_steps * 5) == 0 or (step - starting_step + 1) == steps:
                 self.checkpoint_manager.save()
 
-        # finally:
-        #     try:
-        #         tf.profiler.experimental.stop()
-        #     except:
-        #         pass
-
     @abstractmethod
     def train_step(self, batch, step, UPDATE_STEPS):
         pass
 
     @abstractmethod
-    def select_examples_for_visualization(self, number_of_examples=5):
+    def select_examples_for_visualization(self, number_of_examples=6):
         pass
 
     @abstractmethod
-    def generate_comparison(self):
+    def preview_generated_images_during_training(self):
         pass
 
     @abstractmethod
-    def select_real_and_fake_images_for_fid(self, num_images, dataset):
+    def select_examples_for_evaluation(self, num_images, dataset):
         pass
 
     @abstractmethod
@@ -151,8 +142,8 @@ class S2SModel(ABC):
         pass
 
     def report_fid(self, num_images=TEST_SIZE, step=None):
-        train_real_images, train_fake_images = self.select_real_and_fake_images_for_fid(num_images, self.train_ds)
-        test_real_images, test_fake_images = self.select_real_and_fake_images_for_fid(num_images, self.test_ds)
+        train_real_images, train_fake_images = self.select_examples_for_evaluation(num_images, self.train_ds)
+        test_real_images, test_fake_images = self.select_examples_for_evaluation(num_images, self.test_ds)
         train_value = fid.compare(train_real_images, train_fake_images)
         test_value = fid.compare(test_real_images, test_fake_images)
 
@@ -169,8 +160,8 @@ class S2SModel(ABC):
         return train_value, test_value
 
     def report_l1(self, num_images=TEST_SIZE, step=None):
-        train_real_images, train_fake_images = self.select_real_and_fake_images_for_fid(num_images, self.train_ds)
-        test_real_images, test_fake_images = self.select_real_and_fake_images_for_fid(num_images, self.test_ds)
+        train_real_images, train_fake_images = self.select_examples_for_evaluation(num_images, self.train_ds)
+        test_real_images, test_fake_images = self.select_examples_for_evaluation(num_images, self.test_ds)
         train_value = self.evaluate_l1(train_real_images, train_fake_images)
         test_value = self.evaluate_l1(test_real_images, test_fake_images)
 
@@ -180,24 +171,17 @@ class S2SModel(ABC):
                     tf.summary.scalar("train", train_value, step=step, description=f"L1 between generated and target"
                                                                                    f" images from TRAIN")
                     tf.summary.scalar("test", test_value, step=step, description=f"L1 between generated and target"
-                                                                                   f" images from TEST")
+                                                                                 f" images from TEST")
 
         return train_value, test_value
 
-    def save_generator(self, save_js_too=False):
+    def save_generator(self):
         py_model_path = os.sep.join(["models", "py", "generator", self.architecture_name, self.model_name])
-        js_model_path = os.sep.join(["models", "js", self.architecture_name, self.model_name])
 
         io_utils.delete_folder(py_model_path)
         io_utils.ensure_folder_structure(py_model_path)
 
         self.generator.save(py_model_path)
-
-        if save_js_too:
-            import tensorflowjs as tfjs
-            io_utils.delete_folder(js_model_path)
-            io_utils.ensure_folder_structure(js_model_path)
-            tfjs.converters.save_keras_model(self.generator, js_model_path)
 
     def load_generator(self):
         self.generator = tf.keras.models.load_model(
@@ -232,13 +216,13 @@ class S2SModel(ABC):
 
         for i, images in enumerate(dataset):
             image_path = os.sep.join([base_image_path, f"{i}.png"])
-            fig = self.generate_comparison([images], image_path, steps)
+            fig = self.preview_generated_images_during_training([images], image_path, steps)
             plt.close(fig)
 
         print(f"Generated {i + 1} images (using \"{dataset_name}\" dataset)")
 
     @abstractmethod
-    def show_discriminated_image(self, batch_of_one):
+    def debug_discriminator_patches(self, batch_of_one):
         pass
 
     def show_discriminated_images(self, dataset_name="test", num_images=2):
@@ -251,7 +235,7 @@ class S2SModel(ABC):
         dataset = list(dataset.unbatch().take(num_images).batch(1).as_numpy_iterator())
 
         for images in dataset:
-            self.show_discriminated_image(images)
+            self.debug_discriminator_patches(images)
 
     @staticmethod
     def create_layout_summary():
