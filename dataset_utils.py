@@ -120,8 +120,8 @@ def create_augmentation_with_prob(prob=0.8):
     return augmentation_wrapper
 
 
-def create_paired_s2s_image_loader_indexed_images(sprite_side_source, sprite_side_target, dataset_sizes,
-                                                  train_or_test_folder, palette_ordering):
+def create_indexed_image_loader(sprite_side_source, sprite_side_target, dataset_sizes, train_or_test_folder,
+                                palette_ordering):
     """
     Returns a function which takes an integer in the range of [0, DATASET_SIZE-1] and loads some image file
     from the corresponding dataset (using image_number and DATASET_SIZES to decide) representing images by
@@ -172,7 +172,7 @@ def create_paired_s2s_image_loader_indexed_images(sprite_side_source, sprite_sid
     return load_images
 
 
-def create_paired_s2s_image_loader(sprite_side_source, sprite_side_target, dataset_sizes, train_or_test_folder):
+def create_rgba_image_loader(sprite_side_source, sprite_side_target, dataset_sizes, train_or_test_folder):
     """
     Returns a function which takes an integer in the range of [0, DATASET_SIZE-1] and loads some image file
     from the corresponding dataset (using image_number and DATASET_SIZES to decide).
@@ -204,3 +204,43 @@ def create_paired_s2s_image_loader(sprite_side_source, sprite_side_target, datas
         return input_image, real_image
 
     return load_images
+
+
+def load_rgba_ds(source_direction, target_direction, augment=False):
+    train_dataset = tf.data.Dataset.range(TRAIN_SIZE).shuffle(TRAIN_SIZE)
+    test_dataset = tf.data.Dataset.range(TEST_SIZE).shuffle(TEST_SIZE)
+
+    train_dataset = train_dataset \
+        .map(create_rgba_image_loader(source_direction, target_direction, TRAIN_SIZES, "train"),
+             num_parallel_calls=tf.data.AUTOTUNE)
+
+    if augment:
+        train_dataset = train_dataset \
+            .map(create_augmentation_with_prob(0.8), num_parallel_calls=tf.data.AUTOTUNE)
+
+    train_dataset = train_dataset \
+        .map(normalize_two, num_parallel_calls=tf.data.AUTOTUNE) \
+        .batch(BATCH_SIZE)
+
+    test_dataset = test_dataset.map(create_rgba_image_loader(source_direction, target_direction, TEST_SIZES, "test"),
+                                    num_parallel_calls=tf.data.AUTOTUNE) \
+        .map(normalize_two, num_parallel_calls=tf.data.AUTOTUNE) \
+        .batch(BATCH_SIZE)
+    return train_dataset, test_dataset
+
+
+def load_indexed_ds(source_direction, target_direction, palette_ordering):
+    train_dataset = tf.data.Dataset.range(TRAIN_SIZE).shuffle(TRAIN_SIZE)
+    test_dataset = tf.data.Dataset.range(TEST_SIZE).shuffle(TEST_SIZE)
+
+    train_dataset = train_dataset \
+        .map(create_indexed_image_loader(source_direction, target_direction, TRAIN_SIZES, "train", palette_ordering),
+             num_parallel_calls=tf.data.AUTOTUNE) \
+        .batch(BATCH_SIZE)
+
+    test_dataset = test_dataset \
+        .map(create_indexed_image_loader(source_direction, target_direction, TEST_SIZES, "test", palette_ordering),
+             num_parallel_calls=tf.data.AUTOTUNE) \
+        .batch(BATCH_SIZE)
+
+    return train_dataset, test_dataset

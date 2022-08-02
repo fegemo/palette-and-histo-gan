@@ -6,14 +6,10 @@ import histogram
 import io_utils
 from networks import *
 from side2side_model import S2SModel
-from dataset_utils import create_paired_s2s_image_loader as create_rgba_image_loader
-from dataset_utils import create_augmentation_with_prob, normalize_two as normalize
-from dataset_utils import create_paired_s2s_image_loader_indexed_images as create_indexed_image_loader
 
 
 class Pix2PixModel(S2SModel):
-    def __init__(self, input_direction, target_direction, model_name, architecture_name, lambda_l1):
-        train_ds, test_ds = self.load_datasets(input_direction, target_direction)
+    def __init__(self, train_ds, test_ds, model_name, architecture_name, lambda_l1):
         super().__init__(train_ds, test_ds, model_name, architecture_name)
 
         self.lambda_l1 = lambda_l1
@@ -38,23 +34,6 @@ class Pix2PixModel(S2SModel):
             discriminator=self.discriminator)
         self.checkpoint_manager = tf.train.CheckpointManager(self.checkpoint, directory=self.checkpoint_dir,
                                                              max_to_keep=5)
-
-    def load_datasets(self, input_direction, target_direction):
-        train_dataset = tf.data.Dataset.range(TRAIN_SIZE) \
-            .shuffle(TRAIN_SIZE) \
-            .map(create_rgba_image_loader(input_direction, target_direction, TRAIN_SIZES, "train"),
-                 num_parallel_calls=tf.data.AUTOTUNE) \
-            .map(normalize, num_parallel_calls=tf.data.AUTOTUNE) \
-            .batch(BATCH_SIZE)
-
-        test_dataset = tf.data.Dataset.range(TEST_SIZE) \
-            .shuffle(TEST_SIZE) \
-            .map(create_rgba_image_loader(input_direction, target_direction, TEST_SIZES, "test"),
-                 num_parallel_calls=tf.data.AUTOTUNE) \
-            .map(normalize, num_parallel_calls=tf.data.AUTOTUNE) \
-            .batch(BATCH_SIZE)
-
-        return train_dataset, test_dataset
 
     def create_generator(self):
         return UnetGenerator(4, 4, "tanh")
@@ -145,18 +124,15 @@ class Pix2PixModel(S2SModel):
     def evaluate_l1(self, real_images, fake_images):
         return tf.reduce_mean(tf.abs(fake_images - real_images))
 
-    def preview_generated_images_during_training(self, examples, save_name=None, step=None, predicted_images=None):
+    def preview_generated_images_during_training(self, examples, save_name, step):
         title = ["Input", "Target", "Generated"]
         num_images = len(examples)
         num_columns = len(title)
 
         if step is not None:
             title[-1] += f" ({step / 1000}k)"
-
         figure = plt.figure(figsize=(4 * num_columns, 4 * num_images))
-
-        if predicted_images is None:
-            predicted_images = []
+        predicted_images = []
 
         for i, (source_image, target_image) in enumerate(examples):
             if i >= len(predicted_images):
@@ -231,7 +207,7 @@ class Pix2PixModel(S2SModel):
 
         plt.subplot(1, 6, 3)
         plt.title(tf.strings.join([
-            "Discriminated label ",
+            "Discriminated target ",
             tf.strings.as_string(real_predicted_mean, precision=3)]).numpy().decode("UTF-8"), fontdict={"fontsize": 20})
         plt.imshow(real_predicted, cmap="gray", vmin=0.0, vmax=1.0)
         plt.axis("off")
@@ -252,32 +228,13 @@ class Pix2PixModel(S2SModel):
 
 
 class Pix2PixAugmentedModel(Pix2PixModel):
-    def __init__(self, input_direction, target_direction, model_name, architecture_name, lambda_l1):
-        super().__init__(input_direction, target_direction, model_name, architecture_name, lambda_l1)
-
-    def load_datasets(self, input_direction, target_direction):
-        train_dataset = tf.data.Dataset \
-            .range(TRAIN_SIZE) \
-            .shuffle(TRAIN_SIZE) \
-            .map(create_rgba_image_loader(input_direction, target_direction, TRAIN_SIZES, "train"),
-                 num_parallel_calls=tf.data.AUTOTUNE) \
-            .map(create_augmentation_with_prob(0.8), num_parallel_calls=tf.data.AUTOTUNE) \
-            .map(normalize, num_parallel_calls=tf.data.AUTOTUNE) \
-            .batch(BATCH_SIZE)
-
-        test_dataset = tf.data.Dataset.range(TEST_SIZE) \
-            .shuffle(TEST_SIZE) \
-            .map(create_rgba_image_loader(input_direction, target_direction, TEST_SIZES, "test"),
-                 num_parallel_calls=tf.data.AUTOTUNE) \
-            .map(normalize, num_parallel_calls=tf.data.AUTOTUNE) \
-            .batch(BATCH_SIZE)
-
-        return train_dataset, test_dataset
+    def __init__(self, train_ds, test_ds, model_name, architecture_name, lambda_l1):
+        super().__init__(train_ds, test_ds, model_name, architecture_name, lambda_l1)
 
 
 class Pix2PixHistogramModel(Pix2PixAugmentedModel):
-    def __init__(self, input_direction, target_direction, model_name, architecture_name, lambda_l1, lambda_histogram):
-        super().__init__(input_direction, target_direction, model_name, architecture_name, lambda_l1)
+    def __init__(self, train_ds, test_ds, model_name, architecture_name, lambda_l1, lambda_histogram):
+        super().__init__(train_ds, test_ds, model_name, architecture_name, lambda_l1)
         self.lambda_histogram = lambda_histogram
 
     def generator_loss(self, fake_predicted, fake_image, real_image):
@@ -300,28 +257,10 @@ class Pix2PixHistogramModel(Pix2PixAugmentedModel):
 
 
 class Pix2PixIndexedModel(Pix2PixModel):
-    def __init__(self, input_direction, target_direction, model_name, architecture_name,
-                 palette_ordering, lambda_segmentation=0.5):
-        self.palette_ordering = palette_ordering
-        super().__init__(input_direction, target_direction, model_name, architecture_name, 0.)
+    def __init__(self, train_ds, test_ds, model_name, architecture_name, lambda_segmentation=0.5):
+        super().__init__(train_ds, test_ds, model_name, architecture_name, 0.)
         self.lambda_segmentation = lambda_segmentation
         self.segmentation_loss_object = tf.keras.losses.CategoricalCrossentropy(from_logits=False)
-
-    def load_datasets(self, input_direction, target_direction):
-        ordering = self.palette_ordering
-        train_dataset = tf.data.Dataset.range(TRAIN_SIZE) \
-            .shuffle(TRAIN_SIZE) \
-            .map(create_indexed_image_loader(input_direction, target_direction, TRAIN_SIZES, "train", ordering),
-                 num_parallel_calls=tf.data.AUTOTUNE) \
-            .batch(BATCH_SIZE)
-
-        test_dataset = tf.data.Dataset.range(TEST_SIZE) \
-            .shuffle(TEST_SIZE) \
-            .map(create_indexed_image_loader(input_direction, target_direction, TEST_SIZES, "test", ordering),
-                 num_parallel_calls=tf.data.AUTOTUNE) \
-            .batch(BATCH_SIZE)
-
-        return train_dataset, test_dataset
 
     def create_generator(self):
         return UnetGenerator(1, MAX_PALETTE_SIZE, "softmax")
@@ -388,18 +327,15 @@ class Pix2PixIndexedModel(Pix2PixModel):
         super().log_generator_loss(g_loss[:3], step)
         tf.summary.scalar("segmentation_loss", segmentation_loss, step=step)
 
-    def preview_generated_images_during_training(self, examples, save_name=None, step=None, predicted_images=None):
+    def preview_generated_images_during_training(self, examples, save_name, step):
         title = ["Input", "Target", "Generated"]
         num_images = len(examples)
         num_columns = len(title)
 
         if step is not None:
             title[-1] += f" ({step / 1000}k)"
-
         figure = plt.figure(figsize=(4 * num_columns, 4 * num_images))
-
-        if predicted_images is None:
-            predicted_images = []
+        predicted_images = []
 
         for i, batch in enumerate(examples):
             source_image, target_image, palette = batch

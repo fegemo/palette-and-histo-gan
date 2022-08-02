@@ -130,7 +130,7 @@ class S2SModel(ABC):
         pass
 
     @abstractmethod
-    def preview_generated_images_during_training(self):
+    def preview_generated_images_during_training(self, examples, save_name, step):
         pass
 
     @abstractmethod
