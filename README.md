@@ -15,7 +15,7 @@ The code uses **Tensorflow** 2.9.1 and requires the following dependencies to be
 - scipy
 - scikit-image
 
-For convenience, a [requirements.txt]([requirements.txt]) file is available with the necessary packages 
+For convenience, a [requirements.txt](requirements.txt) file is available with the necessary packages 
 and their versions. In a fresh virtual environment, you can:
 
 ```shell
