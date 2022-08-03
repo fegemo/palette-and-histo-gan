@@ -206,7 +206,7 @@ def create_rgba_image_loader(sprite_side_source, sprite_side_target, dataset_siz
     return load_images
 
 
-def load_rgba_ds(source_direction, target_direction, augment=False):
+def load_rgba_ds(source_direction, target_direction, augment=True):
     train_dataset = tf.data.Dataset.range(TRAIN_SIZE).shuffle(TRAIN_SIZE)
     test_dataset = tf.data.Dataset.range(TEST_SIZE).shuffle(TEST_SIZE)
 
