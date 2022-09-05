@@ -33,7 +33,7 @@ class Pix2PixModel(S2SModel):
             generator=self.generator,
             discriminator=self.discriminator)
         self.checkpoint_manager = tf.train.CheckpointManager(self.checkpoint, directory=self.checkpoint_dir,
-                                                             max_to_keep=5)
+                                                             max_to_keep=1)
 
     def create_generator(self):
         return UnetGenerator(4, 4, "tanh")
