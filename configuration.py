@@ -5,11 +5,12 @@ SEED = 47
 
 DATA_FOLDERS = [os.sep.join(["datasets", "rpg-maker-xp"])]
 
-DIRECTION_BACK = 0
-DIRECTION_LEFT = 1
-DIRECTION_FRONT = 2
-DIRECTION_RIGHT = 3
-DIRECTION_FOLDERS = ["0-back", "1-left", "2-front", "3-right"]
+DIRECTIONS = ["back", "left", "front", "right"]
+DIRECTION_BACK = DIRECTIONS.index("back")                                   # 0
+DIRECTION_LEFT = DIRECTIONS.index("left")                                   # 1
+DIRECTION_FRONT = DIRECTIONS.index("front")                                 # 2
+DIRECTION_RIGHT = DIRECTIONS.index("right")                                 # 3
+DIRECTION_FOLDERS = [f"{i}-{name}" for i, name in enumerate(DIRECTIONS)]    # ["0-back", "1-left", "2-front", "3-right"]
 
 DATASET_SIZES = [294]
 DATASET_SIZE = sum(DATASET_SIZES)
@@ -28,7 +29,7 @@ OUTPUT_CHANNELS = 4
 
 # for indexed colors
 MAX_PALETTE_SIZE = 256
-INVALID_INDEX_COLOR = [255, 0, 220, 255]    # some pink
+INVALID_INDEX_COLOR = [255, 0, 220, 255]    # some hotpink
 
 TEMP_FOLDER = "temp-side2side"
 

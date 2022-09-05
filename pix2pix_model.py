@@ -116,8 +116,8 @@ class Pix2PixModel(S2SModel):
 
         for i, (source_image, real_image) in dataset.enumerate():
             fake_image = self.generator(source_image, training=True)
-            real_images[i] = tf.squeeze(real_image).numpy()
-            fake_images[i] = tf.squeeze(fake_image).numpy()
+            real_images[i] = real_image[0].numpy()
+            fake_images[i] = fake_image[0].numpy()
 
         return real_images, fake_images
 
@@ -184,9 +184,11 @@ class Pix2PixModel(S2SModel):
         real_predicted = tf.repeat(tf.repeat(real_predicted, lower_bound_scaling_factor, axis=0),
                                    lower_bound_scaling_factor, axis=1)
         real_predicted = tf.pad(real_predicted, [[pad_before, pad_after], [pad_before, pad_after], [0, 0]])
+        real_predicted = real_predicted[:, :, 0]
         fake_predicted = tf.repeat(tf.repeat(fake_predicted, lower_bound_scaling_factor, axis=0),
                                    lower_bound_scaling_factor, axis=1)
         fake_predicted = tf.pad(fake_predicted, [[pad_before, pad_after], [pad_before, pad_after], [0, 0]])
+        fake_predicted = fake_predicted[:, :, 0]
 
         # gets rid of the batch dimension, as we have a batch of only one image
         real_image = real_image[0]
@@ -389,9 +391,11 @@ class Pix2PixIndexedModel(Pix2PixModel):
         real_predicted = tf.repeat(tf.repeat(real_predicted, lower_bound_scaling_factor, axis=0),
                                    lower_bound_scaling_factor, axis=1)
         real_predicted = tf.pad(real_predicted, [[pad_before, pad_after], [pad_before, pad_after], [0, 0]])
+        real_predicted = real_predicted[:, :, 0]
         fake_predicted = tf.repeat(tf.repeat(fake_predicted, lower_bound_scaling_factor, axis=0),
                                    lower_bound_scaling_factor, axis=1)
         fake_predicted = tf.pad(fake_predicted, [[pad_before, pad_after], [pad_before, pad_after], [0, 0]])
+        fake_predicted = fake_predicted[:, :, 0]
 
         # gets rid of the batch dimension, as we have a batch of only one image
         real_image = real_image[0]
