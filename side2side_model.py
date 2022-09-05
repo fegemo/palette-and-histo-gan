@@ -87,13 +87,13 @@ class S2SModel(ABC):
                     save_image_name = os.sep.join(
                         [TEMP_FOLDER, "logs", self.architecture_name, self.model_name, self.now_string,
                          "step_{:06d}.png".format(step + 1)])
-                    print(f"Previewing images generated at step {step + 1} (3 train + 3 test)...")
+                    print(f"Previewing images generated at step {step + 1} (3 test + 3 train)...")
                     image_data = self.preview_generated_images_during_training(examples, save_image_name, step + 1)
                     image_data = io_utils.plot_to_image(image_data)
                     tf.summary.image(save_image_name, image_data, step=(step + 1) // update_steps, max_outputs=5)
 
                 if "show_discriminator_output" in callbacks:
-                    print("Showing discriminator output patches (2 train + 2 test)...")
+                    print("Showing discriminator output patches (2 test + 2 train)...")
                     self.show_discriminated_images("test", 2)
                     self.show_discriminated_images("train", 2)
                 if "evaluate_l1" in callbacks:
