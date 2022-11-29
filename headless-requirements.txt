@@ -1,0 +1,4 @@
+tensorflow_addons==0.18.0
+matplotlib
+scipy
+scikit-image

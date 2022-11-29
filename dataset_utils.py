@@ -86,7 +86,8 @@ def augment_hue_rotation(image, seed):
 
 def augment_translation(images):
     image = tf.concat([*images], axis=-1)
-    translate = tf.keras.layers.RandomTranslation((-0.15, 0.075), 0.125, fill_mode="constant", interpolation="nearest")
+    translate = tf.keras.layers.RandomTranslation(
+        (-0.15, 0.075), 0.125, fill_mode="constant", interpolation="nearest")
     image = translate(image)
     images = tf.split(image, len(images), axis=-1)
     return tf.tuple(images)
@@ -94,7 +95,8 @@ def augment_translation(images):
 
 def augment_two(first, second):
     # hue rotation
-    hue_seed = tf.random.uniform(shape=[2], minval=0, maxval=65536, dtype="int32")
+    hue_seed = tf.random.uniform(
+        shape=[2], minval=0, maxval=65536, dtype="int32")
     first = augment_hue_rotation(first, hue_seed)
     second = augment_hue_rotation(second, hue_seed)
     # translation
@@ -135,14 +137,17 @@ def create_indexed_image_loader(sprite_side_source, sprite_side_target, dataset_
         target_path = tf.strings.join(
             [dataset, train_or_test_folder, folders[sprite_side_target], image_number + ".png"], os.sep)
 
-        source_image = tf.cast(load_image(source_path, should_normalize=False), "int32")
-        target_image = tf.cast(load_image(target_path, should_normalize=False), "int32")
+        source_image = tf.cast(load_image(
+            source_path, should_normalize=False), "int32")
+        target_image = tf.cast(load_image(
+            target_path, should_normalize=False), "int32")
 
         # concatenates source and target so the colors in one have the same palette indices as the other
         concatenated_image = tf.concat([source_image, target_image], axis=-1)
 
         # finds the unique colors in both images
-        palette = io_utils.extract_palette(concatenated_image, palette_ordering)
+        palette = io_utils.extract_palette(
+            concatenated_image, palette_ordering)
 
         # converts source and target_images from RGB into indexed, using the extracted palette
         source_image = io_utils.rgba_to_indexed(source_image, palette)
@@ -156,17 +161,21 @@ def create_indexed_image_loader(sprite_side_source, sprite_side_target, dataset_
         # finds the dataset index and image number considering the param is an int
         # in an imaginary concatenated array of all datasets
         dataset_index = tf.constant(0, dtype="int32")
-        condition = lambda which_image, which_dataset: which_image >= tf.gather(dataset_sizes, which_dataset)
-        body = lambda which_image, which_dataset: [which_image - tf.gather(dataset_sizes, which_dataset),
-                                                   which_dataset + 1]
-        image_number, dataset_index = tf.while_loop(condition, body, [image_number, dataset_index])
+
+        def condition(which_image, which_dataset): return which_image >= tf.gather(
+            dataset_sizes, which_dataset)
+        def body(which_image, which_dataset): return [which_image - tf.gather(dataset_sizes, which_dataset),
+                                                      which_dataset + 1]
+        image_number, dataset_index = tf.while_loop(
+            condition, body, [image_number, dataset_index])
 
         # gets the string pointing to the correct images
         dataset = tf.gather(DATA_FOLDERS, dataset_index)
         image_number = tf.strings.as_string(image_number)
 
         # loads and transforms the images according to how the generator and discriminator expect them to be
-        source_image, target_image, palette = load_indexed_images(dataset, image_number)
+        source_image, target_image, palette = load_indexed_images(
+            dataset, image_number)
         return source_image, target_image, palette
 
     return load_images
@@ -184,10 +193,13 @@ def create_rgba_image_loader(sprite_side_source, sprite_side_target, dataset_siz
         # finds the dataset index and image number considering the param is an int
         # in an imaginary concatenated array of all datasets
         dataset_index = tf.constant(0, dtype="int32")
-        condition = lambda which_image, which_dataset: which_image >= tf.gather(dataset_sizes, which_dataset)
-        body = lambda which_image, which_dataset: [which_image - tf.gather(dataset_sizes, which_dataset),
-                                                   which_dataset + 1]
-        image_number, dataset_index = tf.while_loop(condition, body, [image_number, dataset_index])
+
+        def condition(which_image, which_dataset): return which_image >= tf.gather(
+            dataset_sizes, which_dataset)
+        def body(which_image, which_dataset): return [which_image - tf.gather(dataset_sizes, which_dataset),
+                                                      which_dataset + 1]
+        image_number, dataset_index = tf.while_loop(
+            condition, body, [image_number, dataset_index])
 
         # gets the string pointing to the correct images
         dataset = tf.gather(DATA_FOLDERS, dataset_index)
@@ -244,3 +256,19 @@ def load_indexed_ds(source_direction, target_direction, palette_ordering):
         .batch(BATCH_SIZE)
 
     return train_dataset, test_dataset
+
+
+def load_dataset(options):
+    if options.model == "baseline-no-aug":
+        train_ds, test_ds = load_rgba_ds(options.source_index, options.target_index, augment=False)
+    elif options.model == "baseline":
+        train_ds, test_ds = load_rgba_ds(options.source_index, options.target_index)
+    elif options.model == "indexed":
+        train_ds, test_ds = load_indexed_ds(options.source_index, options.target_index, palette_ordering=options.palette_ordering)
+    elif options.model == "histogram":
+        train_ds, test_ds = load_rgba_ds(options.source_index, options.target_index)
+    else:
+        raise SystemExit(
+            f"The specified model {options.model} was not recognized.")
+
+    return train_ds, test_ds
