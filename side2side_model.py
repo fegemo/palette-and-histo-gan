@@ -210,7 +210,7 @@ class S2SModel(ABC):
         dataset = list(dataset.unbatch().take(num_images).batch(1).as_numpy_iterator())
 
         base_image_path = os.sep.join([TEMP_FOLDER, "generated-images", self.architecture_name, self.model_name])
-
+        print("base_image_path", base_image_path)
         io_utils.delete_folder(base_image_path)
         io_utils.ensure_folder_structure(base_image_path)
 

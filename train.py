@@ -2,12 +2,12 @@ import tensorflow as tf
 from math import ceil
 
 from dataset_utils import load_rgba_ds, load_indexed_ds
-from new_configuration import OptionParser
+from configuration import OptionParser
 from pix2pix_model import Pix2PixModel, Pix2PixAugmentedModel, Pix2PixIndexedModel, Pix2PixHistogramModel
 
 options = OptionParser().parse()
-print("options", options)
 if options.verbose:
+	print("Running with options: ", options)
 	print("Tensorflow version: ", tf.__version__)
 
 	if tf.test.gpu_device_name():
@@ -18,12 +18,13 @@ if options.verbose:
 
 # loading the dataset according to the required model
 if options.model == "baseline-no-aug":
-        train_ds, test_ds = load_rgba_ds(
-            options.source_index, options.target_index, augment=False)
+    train_ds, test_ds = load_rgba_ds(
+        options.source_index, options.target_index, augment=False)
 elif options.model == "baseline":
 	train_ds, test_ds = load_rgba_ds(options.source_index, options.target_index)
 elif options.model == "indexed":
-	train_ds, test_ds = load_indexed_ds(options.source_index, options.target_index, palette_ordering=options.palette_ordering)
+	train_ds, test_ds = load_indexed_ds(
+		options.source_index, options.target_index, palette_ordering=options.palette_ordering)
 elif options.model == "histogram":
 	train_ds, test_ds = load_rgba_ds(options.source_index, options.target_index)
 else:
