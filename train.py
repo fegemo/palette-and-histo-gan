@@ -1,8 +1,8 @@
 import tensorflow as tf
 from math import ceil
 
-from dataset_utils import load_dataset
-from new_configuration import OptionParser 
+from dataset_utils import load_rgba_ds, load_indexed_ds
+from new_configuration import OptionParser
 from pix2pix_model import Pix2PixModel, Pix2PixAugmentedModel, Pix2PixIndexedModel, Pix2PixHistogramModel
 
 options = OptionParser().parse()
@@ -16,9 +16,20 @@ if options.verbose:
 		print("Not using a GPU - it will take long!!")
 
 
-
 # loading the dataset according to the required model
-train_ds, test_ds = load_dataset(options)
+if options.model == "baseline-no-aug":
+        train_ds, test_ds = load_rgba_ds(
+            options.source_index, options.target_index, augment=False)
+elif options.model == "baseline":
+	train_ds, test_ds = load_rgba_ds(options.source_index, options.target_index)
+elif options.model == "indexed":
+	train_ds, test_ds = load_indexed_ds(options.source_index, options.target_index, palette_ordering=options.palette_ordering)
+elif options.model == "histogram":
+	train_ds, test_ds = load_rgba_ds(options.source_index, options.target_index)
+else:
+	raise SystemExit(
+		f"The specified model {options.model} was not recognized.")
+
 
 
 # instantiates the proper model

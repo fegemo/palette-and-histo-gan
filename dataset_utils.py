@@ -256,19 +256,3 @@ def load_indexed_ds(source_direction, target_direction, palette_ordering):
         .batch(BATCH_SIZE)
 
     return train_dataset, test_dataset
-
-
-def load_dataset(options):
-    if options.model == "baseline-no-aug":
-        train_ds, test_ds = load_rgba_ds(options.source_index, options.target_index, augment=False)
-    elif options.model == "baseline":
-        train_ds, test_ds = load_rgba_ds(options.source_index, options.target_index)
-    elif options.model == "indexed":
-        train_ds, test_ds = load_indexed_ds(options.source_index, options.target_index, palette_ordering=options.palette_ordering)
-    elif options.model == "histogram":
-        train_ds, test_ds = load_rgba_ds(options.source_index, options.target_index)
-    else:
-        raise SystemExit(
-            f"The specified model {options.model} was not recognized.")
-
-    return train_ds, test_ds
