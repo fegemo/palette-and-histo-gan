@@ -7,11 +7,12 @@ from configuration import *
 
 
 def ensure_folder_structure(*folders):
+    is_absolute_path = os.path.isabs(folders[0])
     provided_paths = []
     for path_part in folders:
         provided_paths.extend(path_part.split(os.sep))
-    folder_path = os.getcwd()
-    
+    folder_path = os.getcwd() if not is_absolute_path else "/"
+
     for folder_name in provided_paths:
         folder_path = os.path.join(folder_path, folder_name)
         if not os.path.isdir(folder_path):
