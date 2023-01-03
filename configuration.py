@@ -4,7 +4,12 @@ from math import ceil
 
 SEED = 47
 
-DATA_FOLDERS = [os.sep.join(["datasets", "rpg-maker-xp"])]
+DATASET_NAMES = ["tiny-hero", "rpg-maker-2000", "rpg-maker-xp", "rpg-maker-vxace", "miscellaneous"]
+DATA_FOLDERS = [
+    os.sep.join(["datasets", folder])
+    for folder
+    in DATASET_NAMES
+]
 
 DIRECTIONS = ["back", "left", "front", "right"]
 DIRECTION_BACK = DIRECTIONS.index("back")  # 0
@@ -14,13 +19,17 @@ DIRECTION_RIGHT = DIRECTIONS.index("right")  # 3
 # ["0-back", "1-left", "2-front", "3-right"]
 DIRECTION_FOLDERS = [f"{i}-{name}" for i, name in enumerate(DIRECTIONS)]
 
-DATASET_SIZES = [294]
+DATASET_MASK = [1, 1, 1, 1, 1]
+DATASET_SIZES = [912, 216, 294, 408, 12372]
+DATASET_SIZES = [n*m for n, m in zip(DATASET_SIZES, DATASET_MASK)]
+
 DATASET_SIZE = sum(DATASET_SIZES)
 TRAIN_PERCENTAGE = 0.85
 TRAIN_SIZES = [ceil(n * TRAIN_PERCENTAGE) for n in DATASET_SIZES]
 TRAIN_SIZE = sum(TRAIN_SIZES)
-TEST_SIZES = [DATASET_SIZES[i] - TRAIN_SIZES[i]
-              for i, n in enumerate(DATASET_SIZES)]
+# TEST_SIZES = [DATASET_SIZES[i] - TRAIN_SIZES[i]
+#               for i, n in enumerate(DATASET_SIZES)]
+TEST_SIZES = [0, 0, 44, 0, 0]
 TEST_SIZE = sum(TEST_SIZES)
 
 BUFFER_SIZE = DATASET_SIZE
@@ -75,7 +84,8 @@ class OptionParser(metaclass=SingletonMeta):
         self.parser.add_argument("--max-palette-size", type=int,
                                  help="the size of the palette to use in the indexed model", default=256)
         self.parser.add_argument("--palette-ordering",
-                                 help="one from { grayness, top2bottom, bottom2top, shuffled } - the order in which colors appear in an image's palette",
+                                 help="one from { grayness, top2bottom, bottom2top, shuffled } - the order in which "
+                                      "colors appear in an image's palette",
                                  default="grayness")
         self.parser.add_argument("--batch", type=int, help="the batch size", default=4)
         self.parser.add_argument(
@@ -86,13 +96,16 @@ class OptionParser(metaclass=SingletonMeta):
                                  help="value for lambda_histogram used in histogram mode", default=1.)
         self.parser.add_argument("--epochs", type=int, help="number of epochs to train", default=160)
         self.parser.add_argument("--callback-show-discriminator-output",
-                                 help="every few update steps, show the discriminator output with some images from the train and test sets",
+                                 help="every few update steps, show the discriminator output with some images from "
+                                      "the train and test sets",
                                  default=False, action="store_true")
         self.parser.add_argument("--callback-evaluate-fid",
-                                 help="every few update steps, evaluate with the FID metric the performance on the train and test sets",
+                                 help="every few update steps, evaluate with the FID metric the performance "
+                                      "on the train and test sets",
                                  default=False, action="store_true")
         self.parser.add_argument("--callback-evaluate-l1",
-                                 help="every few update steps, evaluate with the L1 metric the performance on the train and test sets",
+                                 help="every few update steps, evaluate with the L1 metric the performance "
+                                      "on the train and test sets",
                                  default=False, action="store_true")
         self.parser.add_argument(
             "--log-folder", help="the folder in which the training procedure saves the logs", default="temp-side2side")
@@ -104,6 +117,7 @@ class OptionParser(metaclass=SingletonMeta):
         self.values = self.parser.parse_args()
         setattr(self.values, "source_index", ["back", "left", "front", "right"].index(self.values.source))
         setattr(self.values, "target_index", ["back", "left", "front", "right"].index(self.values.target))
+        setattr(self.values, "seed", SEED)
 
         return self.values
 

@@ -11,3 +11,8 @@ temp
 .vscode
 venv
 .idea
+datasets/miscellaneous
+datasets/rpg-maker-2000
+datasets/rpg-maker-vxace
+datasets/rpg-maker-xp
+datasets/tiny-hero

@@ -176,7 +176,7 @@ class S2SModel(ABC):
         return train_value, test_value
 
     def save_generator(self):
-        py_model_path = os.sep.join(["models", "py", "generator", self.architecture_name, self.model_name])
+        py_model_path = os.sep.join([TEMP_FOLDER, "models", "py", "generator", self.architecture_name, self.model_name])
 
         io_utils.delete_folder(py_model_path)
         io_utils.ensure_folder_structure(py_model_path)
