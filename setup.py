@@ -18,3 +18,6 @@ def ensure_datasets(verbose=True):
                     zip_ref.extract(member, folder)
         elif verbose:
             print(f"No need to unzip {name} - it's already there")
+
+if __name__ == "__main__":
+    ensure_datasets()
