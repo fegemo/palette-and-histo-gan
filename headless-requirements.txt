@@ -3,3 +3,4 @@ matplotlib
 scipy
 scikit-image
 ipython
+tqdm
