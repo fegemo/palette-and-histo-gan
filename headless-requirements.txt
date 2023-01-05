@@ -4,3 +4,4 @@ scipy
 scikit-image
 ipython
 tqdm
+tensorflowjs_converter
