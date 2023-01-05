@@ -4,4 +4,4 @@ scipy
 scikit-image
 ipython
 tqdm
-tensorflowjs
+tensorflowjs==3.21.0
