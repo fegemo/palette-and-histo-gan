@@ -77,10 +77,20 @@ class OptionParser(metaclass=SingletonMeta):
             "model", help="one from { baseline-no-aug, baseline, indexed, histogram } - the model to train")
         self.parser.add_argument("--verbose", help="outputs verbosity information",
                                  default=False, action="store_true")
+
+        self.parser.add_argument("--rmxp", action="store_true", default=False, help="Uses RPG Maker XP dataset")
+        self.parser.add_argument("--rm2k", action="store_true", default=False, help="Uses RPG Maker 2000"
+                                                                                           "dataset")
+        self.parser.add_argument("--rmvx", action="store_true", default=False, help="Uses RPG Maker VX Ace"
+                                                                                           " dataset")
+        self.parser.add_argument("--tiny", action="store_true", default=False, help="Uses the Tiny Hero dataset")
+        self.parser.add_argument("--misc", action="store_true", default=False, help="Uses the miscellaneous"
+                                                                                           " sprites dataset")
         self.parser.add_argument(
             "--source", help="one from { back, left, front, right } - the size used as INPUT", default="front")
         self.parser.add_argument(
             "--target", help="one from { back, left, front, right } - the size used as OUTPUT", default="right")
+
         self.parser.add_argument("--max-palette-size", type=int,
                                  help="the size of the palette to use in the indexed model", default=256)
         self.parser.add_argument("--palette-ordering",
@@ -95,6 +105,7 @@ class OptionParser(metaclass=SingletonMeta):
         self.parser.add_argument("--lambda_histogram", type=float,
                                  help="value for lambda_histogram used in histogram mode", default=1.)
         self.parser.add_argument("--epochs", type=int, help="number of epochs to train", default=160)
+        self.parser.add_argument("--no-aug", action="store_true", help="Disables augmentation", default=False)
         self.parser.add_argument("--callback-show-discriminator-output",
                                  help="every few update steps, show the discriminator output with some images from "
                                       "the train and test sets",
@@ -118,6 +129,27 @@ class OptionParser(metaclass=SingletonMeta):
         setattr(self.values, "source_index", ["back", "left", "front", "right"].index(self.values.source))
         setattr(self.values, "target_index", ["back", "left", "front", "right"].index(self.values.target))
         setattr(self.values, "seed", SEED)
+        datasets_used = list(filter(lambda opt: getattr(self.values, opt), ["tiny", "rm2k", "rmxp", "rmvx", "misc"]))
+        setattr(self.values, "datasets_used", datasets_used)
+        if len(datasets_used) == 0:
+            raise Exception("No dataset was supplied with: --tiny, --rm2k, --rmxp, --rmvx, --misc")
+
+        global DATASET_MASK
+        global DATASET_SIZES
+        global DATASET_SIZE
+        global TRAIN_SIZES
+        global TEST_SIZES
+        global TRAIN_SIZE
+        global TEST_SIZE
+        global BUFFER_SIZE
+
+        DATASET_MASK = list(map(lambda opt: 1 if getattr(self.values, opt) else 0, ["tiny", "rm2k", "rmxp", "rmvx", "misc"]))
+        DATASET_SIZES = [912, 216, 294, 408, 12372]
+        DATASET_SIZES = [n * m for n, m in zip(DATASET_SIZES, DATASET_MASK)]
+        DATASET_SIZE = sum(DATASET_SIZES)
+        TRAIN_SIZES = [ceil(n * TRAIN_PERCENTAGE) for n in DATASET_SIZES]
+        TRAIN_SIZE = sum(TRAIN_SIZES)
+        BUFFER_SIZE = DATASET_SIZE
 
         return self.values
 
@@ -125,7 +157,7 @@ class OptionParser(metaclass=SingletonMeta):
 def in_notebook():
     try:
         from IPython import get_ipython
-        if 'IPKernelApp' not in get_ipython().config:  # pragma: no cover
+        if "IPKernelApp" not in get_ipython().config:  # pragma: no cover
             return False
     except ImportError:
         return False

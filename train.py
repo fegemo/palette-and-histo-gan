@@ -17,9 +17,13 @@ if options.verbose:
         print("Not using a GPU - it will take long!!")
 
 # check if datasets need unzipping
+if options.verbose:
+    print("Datasets used: ", options.datasets_used)
 setup.ensure_datasets(options.verbose)
 
 # setting the seed
+if options.verbose:
+    print("SEED set to: ", options.seed)
 tf.random.set_seed(options.seed)
 
 # loading the dataset according to the required model
@@ -27,12 +31,12 @@ if options.model == "baseline-no-aug":
     train_ds, test_ds = load_rgba_ds(
         options.source_index, options.target_index, augment=False)
 elif options.model == "baseline":
-    train_ds, test_ds = load_rgba_ds(options.source_index, options.target_index)
+    train_ds, test_ds = load_rgba_ds(options.source_index, options.target_index, augment=(not options.no_aug))
 elif options.model == "indexed":
     train_ds, test_ds = load_indexed_ds(
         options.source_index, options.target_index, palette_ordering=options.palette_ordering)
 elif options.model == "histogram":
-    train_ds, test_ds = load_rgba_ds(options.source_index, options.target_index)
+    train_ds, test_ds = load_rgba_ds(options.source_index, options.target_index, augment=(not options.no_aug))
 else:
     raise SystemExit(
         f"The specified model {options.model} was not recognized.")
@@ -71,20 +75,12 @@ elif options.model == "histogram":
         lambda_histogram=options.lambda_histogram)
 
 # configuration for training
-DATASET_SIZES = [294]
-DATASET_SIZE = sum(DATASET_SIZES)
-TRAIN_PERCENTAGE = 0.85
-TRAIN_SIZES = [ceil(n * TRAIN_PERCENTAGE) for n in DATASET_SIZES]
-TRAIN_SIZE = sum(TRAIN_SIZES)
-TEST_SIZES = [DATASET_SIZES[i] - TRAIN_SIZES[i]
-              for i, n in enumerate(DATASET_SIZES)]
-TEST_SIZE = sum(TEST_SIZES)
-
-steps = ceil(TRAIN_SIZE / options.batch) * options.epochs
+steps = ceil(train_ds.cardinality() / options.batch) * options.epochs
 update_steps = steps // 40
 
 print(
-    f"Starting training for {options.epochs} epochs in {steps} steps, updating visualization every {update_steps} steps...")
+    f"Starting training for {options.epochs} epochs in {steps} steps, updating visualization every "
+    f"{update_steps} steps...")
 
 # starting training
 callbacks = [c.replace("-", "_")[len("callback_"):] for c in ["callback-show-discriminator-output",
