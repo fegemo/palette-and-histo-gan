@@ -83,10 +83,10 @@ print(
     f"{update_steps} steps...")
 
 # starting training
-callbacks = [c.replace("-", "_")[len("callback_"):] for c in ["callback-show-discriminator-output",
-                                                              "callback-evaluate-fid", "callback-evaluate-l1"] if
-             c in options]
-
+callbacks = [c[len("callback_"):] for c in ["callback_show_discriminator_output", "callback_evaluate_fid",
+                                            "callback_evaluate_l1"] if
+             getattr(options, c)]
+print("callbacks", callbacks)
 model.fit(steps, update_steps, callbacks=callbacks)
 
 # generating resulting images
