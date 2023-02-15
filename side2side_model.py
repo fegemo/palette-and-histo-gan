@@ -26,7 +26,7 @@ def show_eta(training_start_time, step_start_time, current_step, training_starti
 
 
 class S2SModel(ABC):
-    def __init__(self, train_ds, test_ds, model_name, architecture_name="s2smodel"):
+    def __init__(self, train_ds, test_ds, model_name, architecture_name="s2smodel", keep_checkpoint=False):
         """
         Params:
         - train_ds: the dataset used for training. Should have target images as labels
@@ -35,6 +35,7 @@ class S2SModel(ABC):
                       Should be path-friendly
         - architecture_name: the network architecture + variation used (eg, pix2pix, pix2pix-wgan).
                              Should be path-friendly
+        - keep_checkpoint: boolean indicating whether checkpoints should be saved. Default: False.
         """
         self.generator = None
         self.discriminator = None
@@ -50,6 +51,7 @@ class S2SModel(ABC):
         self.checkpoint_dir = os.sep.join(
             [TEMP_FOLDER, "training-checkpoints", self.architecture_name, self.model_name])
         self.layout_summary = S2SModel.create_layout_summary()
+        self.keep_checkpoint = keep_checkpoint
 
     def fit(self, steps, update_steps, callbacks=[], starting_step=0):
         if starting_step == 0:
@@ -118,8 +120,9 @@ class S2SModel(ABC):
                 print(".", end="", flush=True)
 
             # saves a training checkpoint UPDATE_STEPS*5
-            if (step + 1) % (update_steps * 5) == 0 or (step - starting_step + 1) == steps:
-                self.checkpoint_manager.save()
+            if self.keep_checkpoint:
+                if (step + 1) % (update_steps * 5) == 0 or (step - starting_step + 1) == steps:
+                    self.checkpoint_manager.save()
 
     @abstractmethod
     def train_step(self, batch, step, UPDATE_STEPS):

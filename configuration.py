@@ -118,6 +118,8 @@ class OptionParser(metaclass=SingletonMeta):
                                  help="every few update steps, evaluate with the L1 metric the performance "
                                       "on the train and test sets",
                                  default=False, action="store_true")
+        self.parser.add_argument("--save-model", help="saves the model at the end", default=False, action="store_true")
+        self.parser.add_argument("--keep-checkpoint", help="checkpoints training", default=False, action="store_true")
         self.parser.add_argument(
             "--log-folder", help="the folder in which the training procedure saves the logs", default="temp-side2side")
         self.initialized = True

@@ -9,8 +9,8 @@ from side2side_model import S2SModel
 
 
 class Pix2PixModel(S2SModel):
-    def __init__(self, train_ds, test_ds, model_name, architecture_name, lambda_l1):
-        super().__init__(train_ds, test_ds, model_name, architecture_name)
+    def __init__(self, train_ds, test_ds, model_name, architecture_name, lambda_l1, keep_checkpoint):
+        super().__init__(train_ds, test_ds, model_name, architecture_name, keep_checkpoint)
 
         self.lambda_l1 = lambda_l1
 
@@ -230,13 +230,13 @@ class Pix2PixModel(S2SModel):
 
 
 class Pix2PixAugmentedModel(Pix2PixModel):
-    def __init__(self, train_ds, test_ds, model_name, architecture_name, lambda_l1):
-        super().__init__(train_ds, test_ds, model_name, architecture_name, lambda_l1)
+    def __init__(self, train_ds, test_ds, model_name, architecture_name, lambda_l1, keep_checkpoint):
+        super().__init__(train_ds, test_ds, model_name, architecture_name, lambda_l1, keep_checkpoint)
 
 
 class Pix2PixHistogramModel(Pix2PixAugmentedModel):
-    def __init__(self, train_ds, test_ds, model_name, architecture_name, lambda_l1, lambda_histogram):
-        super().__init__(train_ds, test_ds, model_name, architecture_name, lambda_l1)
+    def __init__(self, train_ds, test_ds, model_name, architecture_name, lambda_l1, lambda_histogram, keep_checkpoint):
+        super().__init__(train_ds, test_ds, model_name, architecture_name, lambda_l1, keep_checkpoint)
         self.lambda_histogram = lambda_histogram
 
     def generator_loss(self, fake_predicted, fake_image, real_image):
@@ -259,8 +259,8 @@ class Pix2PixHistogramModel(Pix2PixAugmentedModel):
 
 
 class Pix2PixIndexedModel(Pix2PixModel):
-    def __init__(self, train_ds, test_ds, model_name, architecture_name, lambda_segmentation=0.5):
-        super().__init__(train_ds, test_ds, model_name, architecture_name, 0.)
+    def __init__(self, train_ds, test_ds, model_name, architecture_name, lambda_segmentation=0.5, keep_checkpoint=False):
+        super().__init__(train_ds, test_ds, model_name, architecture_name, 0., keep_checkpoint)
         self.lambda_segmentation = lambda_segmentation
         self.segmentation_loss_object = tf.keras.losses.CategoricalCrossentropy(from_logits=False)
 

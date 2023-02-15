@@ -50,21 +50,24 @@ if options.model == "baseline-no-aug":
         test_ds=test_ds,
         model_name="baseline (no aug.)",
         architecture_name=architecture_name,
-        lambda_l1=options.lambda_l1)
+        lambda_l1=options.lambda_l1,
+        keep_checkpoint=options.keep_checkpoint)
 elif options.model == "baseline":
     model = Pix2PixAugmentedModel(
         train_ds=train_ds,
         test_ds=test_ds,
         model_name="baseline",
         architecture_name=architecture_name,
-        lambda_l1=options.lambda_l1)
+        lambda_l1=options.lambda_l1,
+        keep_checkpoint=options.keep_checkpoint)
 elif options.model == "indexed":
     model = Pix2PixIndexedModel(
         train_ds=train_ds,
         test_ds=test_ds,
         model_name="indexed",
         architecture_name=architecture_name,
-        lambda_segmentation=options.lambda_segmentation)
+        lambda_segmentation=options.lambda_segmentation,
+        keep_checkpoint=options.keep_checkpoint)
 elif options.model == "histogram":
     model = Pix2PixHistogramModel(
         train_ds=train_ds,
@@ -72,7 +75,8 @@ elif options.model == "histogram":
         model_name="histogram",
         architecture_name=architecture_name,
         lambda_l1=options.lambda_l1,
-        lambda_histogram=options.lambda_histogram)
+        lambda_histogram=options.lambda_histogram,
+        keep_checkpoint=options.keep_checkpoint)
 
 # configuration for training
 steps = ceil(train_ds.cardinality() / options.batch) * options.epochs
@@ -86,11 +90,14 @@ print(
 callbacks = [c[len("callback_"):] for c in ["callback_show_discriminator_output", "callback_evaluate_fid",
                                             "callback_evaluate_l1"] if
              getattr(options, c)]
-print("callbacks", callbacks)
+
 model.fit(steps, update_steps, callbacks=callbacks)
 
 # generating resulting images
 model.generate_images_from_dataset()
 
-print(f"Saving the generator...")
-model.save_generator()
+if options.save_model:
+    print(f"Saving the generator...")
+    model.save_generator()
+
+print("Finished executing.")
