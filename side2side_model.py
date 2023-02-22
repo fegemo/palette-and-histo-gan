@@ -99,13 +99,15 @@ class S2SModel(ABC):
                     self.show_discriminated_images("test", 2)
                     self.show_discriminated_images("train", 2)
                 if "evaluate_l1" in callbacks:
+                    num_test_images = min(TEST_SIZE, 136)
                     print(f"Comparing L1 between generated images from train and test...", end="", flush=True)
-                    l1_train, l1_test = self.report_l1(step=(step + 1) // update_steps)
+                    l1_train, l1_test = self.report_l1(step=(step + 1) // update_steps, num_images=num_test_images)
                     print(f" L1: {l1_train:.5f} / {l1_test:.5f} (train/test)")
                 if "evaluate_fid" in callbacks:
+                    num_test_images = min(TEST_SIZE, 136)
                     print(
-                        f"Calculating Fréchet Inception Distance at {(step + 1) / 1000}k with {TEST_SIZE} examples...")
-                    train_fid, test_fid = self.report_fid(step=(step + 1) // update_steps)
+                        f"Calculating Fréchet Inception Distance at {(step + 1) / 1000}k with {num_test_images} examples...")
+                    train_fid, test_fid = self.report_fid(step=(step + 1) // update_steps, num_images=num_test_images)
                     print(f"FID: {train_fid:.3f} / {test_fid:.3f} (train/test)")
 
                 print(f"Step: {(step + 1) / 1000}k")

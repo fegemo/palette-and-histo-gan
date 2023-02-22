@@ -21,7 +21,7 @@ DIRECTION_FOLDERS = [f"{i}-{name}" for i, name in enumerate(DIRECTIONS)]
 
 DATASET_MASK = [1, 1, 1, 1, 1]
 DATASET_SIZES = [912, 216, 294, 408, 12372]
-DATASET_SIZES = [n*m for n, m in zip(DATASET_SIZES, DATASET_MASK)]
+DATASET_SIZES = [n * m for n, m in zip(DATASET_SIZES, DATASET_MASK)]
 
 DATASET_SIZE = sum(DATASET_SIZES)
 TRAIN_PERCENTAGE = 0.85
@@ -80,12 +80,12 @@ class OptionParser(metaclass=SingletonMeta):
 
         self.parser.add_argument("--rmxp", action="store_true", default=False, help="Uses RPG Maker XP dataset")
         self.parser.add_argument("--rm2k", action="store_true", default=False, help="Uses RPG Maker 2000"
-                                                                                           "dataset")
+                                                                                    " dataset")
         self.parser.add_argument("--rmvx", action="store_true", default=False, help="Uses RPG Maker VX Ace"
-                                                                                           " dataset")
+                                                                                    " dataset")
         self.parser.add_argument("--tiny", action="store_true", default=False, help="Uses the Tiny Hero dataset")
         self.parser.add_argument("--misc", action="store_true", default=False, help="Uses the miscellaneous"
-                                                                                           " sprites dataset")
+                                                                                    " sprites dataset")
         self.parser.add_argument(
             "--source", help="one from { back, left, front, right } - the size used as INPUT", default="front")
         self.parser.add_argument(
@@ -107,7 +107,8 @@ class OptionParser(metaclass=SingletonMeta):
         self.parser.add_argument("--epochs", type=int, help="number of epochs to train", default=160)
         self.parser.add_argument("--no-aug", action="store_true", help="Disables all augmentation", default=False)
         self.parser.add_argument("--no-hue", action="store_true", help="Disables hue augmentation", default=False)
-        self.parser.add_argument("--no-tran", action="store_true", help="Disables translation augmentation", default=False)
+        self.parser.add_argument("--no-tran", action="store_true", help="Disables translation augmentation",
+                                 default=False)
         self.parser.add_argument("--histo-loss", help="one of { hellinger, l1, l2 } to use as histogram loss",
                                  default="hellinger")
         self.parser.add_argument("--callback-show-discriminator-output",
@@ -152,7 +153,8 @@ class OptionParser(metaclass=SingletonMeta):
         global TEST_SIZE
         global BUFFER_SIZE
 
-        DATASET_MASK = list(map(lambda opt: 1 if getattr(self.values, opt) else 0, ["tiny", "rm2k", "rmxp", "rmvx", "misc"]))
+        DATASET_MASK = list(
+            map(lambda opt: 1 if getattr(self.values, opt) else 0, ["tiny", "rm2k", "rmxp", "rmvx", "misc"]))
         DATASET_SIZES = [912, 216, 294, 408, 12372]
         DATASET_SIZES = [n * m for n, m in zip(DATASET_SIZES, DATASET_MASK)]
         DATASET_SIZE = sum(DATASET_SIZES)
