@@ -27,9 +27,9 @@ DATASET_SIZE = sum(DATASET_SIZES)
 TRAIN_PERCENTAGE = 0.85
 TRAIN_SIZES = [ceil(n * TRAIN_PERCENTAGE) for n in DATASET_SIZES]
 TRAIN_SIZE = sum(TRAIN_SIZES)
-# TEST_SIZES = [DATASET_SIZES[i] - TRAIN_SIZES[i]
-#               for i, n in enumerate(DATASET_SIZES)]
-TEST_SIZES = [0, 0, 44, 0, 0]
+TEST_SIZES = [DATASET_SIZES[i] - TRAIN_SIZES[i]
+              for i, n in enumerate(DATASET_SIZES)]
+# TEST_SIZES = [0, 0, 44, 0, 0]
 TEST_SIZE = sum(TEST_SIZES)
 
 BUFFER_SIZE = DATASET_SIZE
@@ -105,7 +105,11 @@ class OptionParser(metaclass=SingletonMeta):
         self.parser.add_argument("--lambda_histogram", type=float,
                                  help="value for lambda_histogram used in histogram mode", default=1.)
         self.parser.add_argument("--epochs", type=int, help="number of epochs to train", default=160)
-        self.parser.add_argument("--no-aug", action="store_true", help="Disables augmentation", default=False)
+        self.parser.add_argument("--no-aug", action="store_true", help="Disables all augmentation", default=False)
+        self.parser.add_argument("--no-hue", action="store_true", help="Disables hue augmentation", default=False)
+        self.parser.add_argument("--no-tran", action="store_true", help="Disables translation augmentation", default=False)
+        self.parser.add_argument("--histo-loss", help="one of { hellinger, l1, l2 } to use as histogram loss",
+                                 default="hellinger")
         self.parser.add_argument("--callback-show-discriminator-output",
                                  help="every few update steps, show the discriminator output with some images from "
                                       "the train and test sets",
@@ -131,6 +135,9 @@ class OptionParser(metaclass=SingletonMeta):
         setattr(self.values, "source_index", ["back", "left", "front", "right"].index(self.values.source))
         setattr(self.values, "target_index", ["back", "left", "front", "right"].index(self.values.target))
         setattr(self.values, "seed", SEED)
+        if self.values.no_aug:
+            setattr(self.values, "no_hue", True)
+            setattr(self.values, "no_tran", True)
         datasets_used = list(filter(lambda opt: getattr(self.values, opt), ["tiny", "rm2k", "rmxp", "rmvx", "misc"]))
         setattr(self.values, "datasets_used", datasets_used)
         if len(datasets_used) == 0:
@@ -151,6 +158,9 @@ class OptionParser(metaclass=SingletonMeta):
         DATASET_SIZE = sum(DATASET_SIZES)
         TRAIN_SIZES = [ceil(n * TRAIN_PERCENTAGE) for n in DATASET_SIZES]
         TRAIN_SIZE = sum(TRAIN_SIZES)
+        TEST_SIZES = [DATASET_SIZES[i] - TRAIN_SIZES[i]
+                      for i, n in enumerate(DATASET_SIZES)]
+        TEST_SIZE = sum(TEST_SIZES)
         BUFFER_SIZE = DATASET_SIZE
 
         return self.values

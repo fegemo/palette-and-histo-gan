@@ -81,17 +81,23 @@ def calculate_rgbuv_histogram(image_batch, size=64, method="inverse-quadratic", 
     return histograms_normalized
 
 
+def hellinger_distance(one, two):
+    return 1. / tf.sqrt(2.) * tf.sqrt(
+        tf.reduce_sum(tf.pow(tf.sqrt(two) - tf.sqrt(one), 2.))
+    )
+
+
 def hellinger_loss(y_true, y_pred):
-    batch_size = tf.cast(tf.shape(y_true)[0], "float32")
     # Hellinger distance between the two histograms:
-    # 1/sqrt(2) * ||sqrt(H_true) - sqrt(H_pred)||
-    return (1. / tf.sqrt(2.) * tf.sqrt(
-        tf.reduce_sum(tf.pow(tf.sqrt(y_pred) - tf.sqrt(y_true), 2.)))) / batch_size
+    # 1/sqrt(2) * ||sqrt(H_true) - sqrt(H_pred)||²
+    return tf.reduce_mean(1. / tf.sqrt(2.) * tf.sqrt(
+        tf.reduce_sum(tf.pow(tf.sqrt(y_pred) - tf.sqrt(y_true), 2.), axis=[1, 2, 3])
+    ))
 
 
 def l1_loss(y_true, y_pred):
-    return tf.reduce_mean(tf.abs(y_true - y_pred))
+    return tf.reduce_mean(tf.reduce_sum(tf.abs(y_true - y_pred), axis=[1, 2, 3]))
 
 
 def l2_loss(y_true, y_pred):
-    return tf.reduce_mean(tf.pow(y_true - y_pred, 2))
+    return tf.reduce_mean(tf.reduce_sum(tf.pow(y_true - y_pred, 2), axis=[1, 2, 3]))

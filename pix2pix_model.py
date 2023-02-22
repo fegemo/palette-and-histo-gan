@@ -125,7 +125,7 @@ class Pix2PixModel(S2SModel):
         return tf.reduce_mean(tf.abs(fake_images - real_images))
 
     def preview_generated_images_during_training(self, examples, save_name, step):
-        title = ["Input", "Target", "Generated"]
+        title = ["Input", "Target", "Generated", "Input histo", "Target histo", "Generated histo"]
         num_images = len(examples)
         num_columns = len(title)
 
@@ -134,22 +134,37 @@ class Pix2PixModel(S2SModel):
         figure = plt.figure(figsize=(4 * num_columns, 4 * num_images))
         predicted_images = []
 
+        source_image_histograms = [histogram.calculate_rgbuv_histogram(image[0]) for image in examples]
+        target_image_histograms = [histogram.calculate_rgbuv_histogram(image[1]) for image in examples]
+        predicted_images_histograms = []
+
         for i, (source_image, target_image) in enumerate(examples):
             if i >= len(predicted_images):
-                predicted_images.append(self.generator(source_image, training=True))
+                predicted_image = self.generator(source_image, training=True)
+                predicted_images.append(predicted_image)
+                predicted_images_histograms.append(
+                    histogram.calculate_rgbuv_histogram(predicted_image[tf.newaxis, ...]))
 
             images = [source_image, target_image, predicted_images[i]]
-            for j in range(num_columns):
+            for j in range(len(images)):
                 idx = i * num_columns + j + 1
                 plt.subplot(num_images, num_columns, idx)
                 plt.title(title[j] if i == 0 else "", fontdict={"fontsize": 24})
                 plt.imshow(images[j][0] * 0.5 + 0.5)
                 plt.axis("off")
 
+            histograms = [source_image_histograms[i], target_image_histograms[i], predicted_images_histograms[i]]
+            for j in range(len(histograms)):
+                idx += 1
+                plt.subplot(num_images, num_columns, idx)
+                plt.title(title[j+3] if i == 0 else "", fontdict={"fontsize": 24})
+                plt.imshow(np.squeeze(np.clip(histograms[j] * 100., 0., 1.)))
+                plt.axis("off")
+
         figure.tight_layout()
 
         if save_name is not None:
-            plt.savefig(save_name)
+            plt.savefig(save_name, transparent=True)
 
         # cannot call show otherwise it flushes and empties the figure, sending to tensorboard
         # only a blank image... hence, let us just display the saved image
@@ -235,14 +250,23 @@ class Pix2PixAugmentedModel(Pix2PixModel):
 
 
 class Pix2PixHistogramModel(Pix2PixAugmentedModel):
-    def __init__(self, train_ds, test_ds, model_name, architecture_name, lambda_l1, lambda_histogram, keep_checkpoint):
+    def __init__(self, train_ds, test_ds, model_name, architecture_name, lambda_l1, lambda_histogram, histo_loss,
+                 keep_checkpoint):
         super().__init__(train_ds, test_ds, model_name, architecture_name, lambda_l1, keep_checkpoint)
         self.lambda_histogram = lambda_histogram
+        if histo_loss == "hellinger":
+            self.histo_loss = histogram.hellinger_loss
+        elif histo_loss == "l1":
+            self.histo_loss = histogram.l1_loss
+        elif histo_loss == "l2":
+            self.histo_loss = histogram.l2_loss
+        else:
+            raise Exception(f"Unrecognized histogram loss passed to the model: {histo_loss}")
 
     def generator_loss(self, fake_predicted, fake_image, real_image):
         real_histogram = histogram.calculate_rgbuv_histogram(real_image)
         fake_histogram = histogram.calculate_rgbuv_histogram(fake_image)
-        histogram_loss = histogram.hellinger_loss(real_histogram, fake_histogram)
+        histogram_loss = self.histo_loss(real_histogram, fake_histogram)
 
         total_loss, adversarial_loss, l1_loss = super().generator_loss(fake_predicted, fake_image, real_image)
         total_loss += self.lambda_histogram * histogram_loss
@@ -259,7 +283,8 @@ class Pix2PixHistogramModel(Pix2PixAugmentedModel):
 
 
 class Pix2PixIndexedModel(Pix2PixModel):
-    def __init__(self, train_ds, test_ds, model_name, architecture_name, lambda_segmentation=0.5, keep_checkpoint=False):
+    def __init__(self, train_ds, test_ds, model_name, architecture_name, lambda_segmentation=0.5,
+                 keep_checkpoint=False):
         super().__init__(train_ds, test_ds, model_name, architecture_name, 0., keep_checkpoint)
         self.lambda_segmentation = lambda_segmentation
         self.segmentation_loss_object = tf.keras.losses.CategoricalCrossentropy(from_logits=False)

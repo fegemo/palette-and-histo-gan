@@ -109,7 +109,7 @@ def plot_to_image(matplotlib_figure, channels=OUTPUT_CHANNELS):
     returns it. The supplied figure is closed and inaccessible after this call."""
     # Save the plot to a PNG in memory.
     buffer = io.BytesIO()
-    plt.savefig(buffer, format="png")
+    plt.savefig(buffer, format="png", transparent=True)
     # Closing the figure prevents it from being displayed directly inside
     # the notebook.
     plt.close(matplotlib_figure)

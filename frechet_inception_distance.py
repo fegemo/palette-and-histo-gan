@@ -24,8 +24,8 @@ def _scale_images(images, new_shape):
 
 def _calculate_fid(model, images1, images2):
     # calculate activations
-    act1 = model.predict(images1)
-    act2 = model.predict(images2)
+    act1 = model.predict(images1, verbose=0)
+    act2 = model.predict(images2, verbose=0)
     # calculate mean and covariance statistics
     mu1, sigma1 = act1.mean(axis=0), cov(act1, rowvar=False)
     mu2, sigma2 = act2.mean(axis=0), cov(act2, rowvar=False)

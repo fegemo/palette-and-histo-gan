@@ -29,14 +29,18 @@ tf.random.set_seed(options.seed)
 # loading the dataset according to the required model
 if options.model == "baseline-no-aug":
     train_ds, test_ds = load_rgba_ds(
-        options.source_index, options.target_index, augment=False)
+        options.source_index, options.target_index, should_augment_hue=False, should_augment_translation=False)
 elif options.model == "baseline":
-    train_ds, test_ds = load_rgba_ds(options.source_index, options.target_index, augment=(not options.no_aug))
+    train_ds, test_ds = load_rgba_ds(options.source_index, options.target_index,
+                                     should_augment_hue=(not options.no_hue),
+                                     should_augment_translation=(not options.no_tran))
 elif options.model == "indexed":
     train_ds, test_ds = load_indexed_ds(
         options.source_index, options.target_index, palette_ordering=options.palette_ordering)
 elif options.model == "histogram":
-    train_ds, test_ds = load_rgba_ds(options.source_index, options.target_index, augment=(not options.no_aug))
+    train_ds, test_ds = load_rgba_ds(options.source_index, options.target_index,
+                                     should_augment_hue=(not options.no_hue),
+                                     should_augment_translation=(not options.no_tran))
 else:
     raise SystemExit(
         f"The specified model {options.model} was not recognized.")
@@ -76,6 +80,7 @@ elif options.model == "histogram":
         architecture_name=architecture_name,
         lambda_l1=options.lambda_l1,
         lambda_histogram=options.lambda_histogram,
+        histo_loss=options.histo_loss,
         keep_checkpoint=options.keep_checkpoint)
 
 # configuration for training
@@ -101,3 +106,6 @@ if options.save_model:
     model.save_generator()
 
 print("Finished executing.")
+
+# python train.py histogram --rm2k --lambda_l1 30 --lambda_histogram 1 --no-aug --histo-loss hellinger --callback-evaluate-fid --callback-evaluate-l1 --batch 1 --log-folder temp-side2side/histogram/histo0,l130,hellinger,b1
+

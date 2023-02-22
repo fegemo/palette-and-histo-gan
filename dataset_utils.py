@@ -88,19 +88,23 @@ def augment_translation(images):
     image = tf.concat([*images], axis=-1)
     translate = tf.keras.layers.RandomTranslation(
         (-0.15, 0.075), 0.125, fill_mode="constant", interpolation="nearest")
-    image = translate(image)
+    image = translate(image, training=True)
     images = tf.split(image, len(images), axis=-1)
     return tf.tuple(images)
 
 
-def augment_two(first, second):
+def augment_two(first, second, should_rotate_hue, should_translate):
     # hue rotation
-    hue_seed = tf.random.uniform(
-        shape=[2], minval=0, maxval=65536, dtype="int32")
-    first = augment_hue_rotation(first, hue_seed)
-    second = augment_hue_rotation(second, hue_seed)
+    if should_rotate_hue:
+        hue_seed = tf.random.uniform(
+            shape=[2], minval=0, maxval=65536, dtype="int32")
+        first = augment_hue_rotation(first, hue_seed)
+        second = augment_hue_rotation(second, hue_seed)
+
     # translation
-    first, second = augment_translation((first, second))
+    if should_translate:
+        first, second = augment_translation((first, second))
+
     return first, second
 
 
@@ -108,14 +112,14 @@ def normalize_two(first, second):
     return normalize(first), normalize(second)
 
 
-def create_augmentation_with_prob(prob=0.8):
+def create_augmentation_with_prob(prob=0.8, should_augment_hue=True, should_augment_translation=True):
     prob = tf.constant(prob)
 
     def augmentation_wrapper(first, second):
         choice = tf.random.uniform(shape=[])
-        should_augment = choice < prob
-        if should_augment:
-            return augment_two(first, second)
+        inside_augmentation_probability = choice < prob
+        if inside_augmentation_probability:
+            return augment_two(first, second, should_augment_hue, should_augment_translation)
         else:
             return first, second
 
@@ -218,7 +222,7 @@ def create_rgba_image_loader(sprite_side_source, sprite_side_target, dataset_siz
     return load_images
 
 
-def load_rgba_ds(source_direction, target_direction, augment=True):
+def load_rgba_ds(source_direction, target_direction, should_augment_hue=True, should_augment_translation=True):
     train_dataset = tf.data.Dataset.range(TRAIN_SIZE).shuffle(TRAIN_SIZE)
     test_dataset = tf.data.Dataset.range(TEST_SIZE).shuffle(TEST_SIZE)
 
@@ -226,9 +230,11 @@ def load_rgba_ds(source_direction, target_direction, augment=True):
         .map(create_rgba_image_loader(source_direction, target_direction, TRAIN_SIZES, "train"),
              num_parallel_calls=tf.data.AUTOTUNE)
 
-    if augment:
+    should_augment = should_augment_hue or should_augment_translation
+    if should_augment:
         train_dataset = train_dataset \
-            .map(create_augmentation_with_prob(0.8), num_parallel_calls=tf.data.AUTOTUNE)
+            .map(create_augmentation_with_prob(0.8, should_augment_hue, should_augment_translation),
+                 num_parallel_calls=tf.data.AUTOTUNE)
 
     train_dataset = train_dataset \
         .map(normalize_two, num_parallel_calls=tf.data.AUTOTUNE) \
