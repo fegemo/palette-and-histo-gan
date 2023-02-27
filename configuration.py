@@ -91,6 +91,21 @@ class OptionParser(metaclass=SingletonMeta):
                                                                                                 "validation and to "
                                                                                                 "generate images in "
                                                                                                 "the end")
+        self.parser.add_argument("--rm2k-validation", action="store_true", default=False, help="Uses only RM2K (32 "
+                                                                                                "test examples) for "
+                                                                                                "validation and to "
+                                                                                                "generate images in "
+                                                                                                "the end")
+        self.parser.add_argument("--rmvx-validation", action="store_true", default=False, help="Uses only RMVX (61 "
+                                                                                                "test examples) for "
+                                                                                                "validation and to "
+                                                                                                "generate images in "
+                                                                                                "the end")
+        self.parser.add_argument("--tiny-validation", action="store_true", default=False, help="Uses only tiny (136 "
+                                                                                                "test examples) for "
+                                                                                                "validation and to "
+                                                                                                "generate images in "
+                                                                                                "the end")
         self.parser.add_argument(
             "--source", help="one from { back, left, front, right } - the size used as INPUT", default="front")
         self.parser.add_argument(
@@ -165,11 +180,17 @@ class OptionParser(metaclass=SingletonMeta):
         DATASET_SIZE = sum(DATASET_SIZES)
         TRAIN_SIZES = [ceil(n * TRAIN_PERCENTAGE) for n in DATASET_SIZES]
         TRAIN_SIZE = sum(TRAIN_SIZES)
-        if not self.values.rmxp_validation:
-            TEST_SIZES = [DATASET_SIZES[i] - TRAIN_SIZES[i]
-                          for i, n in enumerate(DATASET_SIZES)]
-        else:
+        TEST_SIZES = [DATASET_SIZES[i] - TRAIN_SIZES[i]
+                      for i, n in enumerate(DATASET_SIZES)]
+        if self.values.rmxp_validation:
             TEST_SIZES = [0, 0, 44, 0, 0]
+        elif self.values.rm2k_validation:
+            TEST_SIZES = [0, 32, 0, 0, 0]
+        elif self.values.rmvx_validation:
+            TEST_SIZES = [0, 0, 0, 61, 0]
+        elif self.values.tiny_validation:
+            TEST_SIZES = [136, 0, 0, 0, 0]
+
         TEST_SIZE = sum(TEST_SIZES)
         BUFFER_SIZE = DATASET_SIZE
 
