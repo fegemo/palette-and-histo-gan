@@ -1,42 +1,85 @@
 import numpy as np
 from IPython import display
 from matplotlib import pyplot as plt
+import tensorflow_io as tfio
+from scipy.spatial import KDTree
 
 import histogram
 import io_utils
+from dataset_utils import blacken_transparent_pixels
 from networks import *
 from side2side_model import S2SModel
 
 
+class PostProcessGenerator(tf.keras.Model):
+    def __init__(self, real_generator, post_process_type):
+        super().__init__()
+        self.real_generator = real_generator
+        self.post_process_type = post_process_type
+
+    def __call__(self, batch, **kwargs):
+        fake_image = self.real_generator(batch, **kwargs)
+        palette = io_utils.batch_extract_palette(batch)
+        post_processed_fake_image = self.quantize_to_palette(fake_image, palette)
+
+        return post_processed_fake_image
+
+    def quantize_to_palette(self, batch_image, batch_palette):
+        # batch_image and batch_palette come in [-1, 1]
+        batch_palette_original = batch_palette
+        # but they must be in [0, 1] for conversion to lab/yuv
+        batch_image = batch_image * 0.5 + 0.5
+        batch_palette = batch_palette * 0.5 + 0.5
+
+        batch_image_rgb = batch_image[..., :3]
+        batch_image_alpha = batch_image[..., 3:]
+        batch_palette_rgb = batch_palette[..., :3]
+        batch_palette_alpha = batch_palette[..., 3:]
+        if self.post_process_type == "cielab":
+            batch_image_lab = tfio.experimental.color.rgb_to_lab(batch_image_rgb)
+            batch_image = tf.concat([batch_image_lab, batch_image_alpha], -1)
+            batch_palette_lab = tfio.experimental.color.rgb_to_lab(batch_palette_rgb)
+            batch_palette = tf.concat([batch_palette_lab, batch_palette_alpha], -1)
+        elif self.post_process_type == "yuv":
+            batch_image_yuv = tfio.experimental.color.rgb_to_yuv(batch_image[..., :3])
+            batch_image = tf.concat([batch_image_yuv, batch_image_alpha], -1)
+            batch_palette_yuv = tfio.experimental.color.rgb_to_yuv(batch_palette_rgb)
+            batch_palette = tf.concat([batch_palette_yuv, batch_palette_alpha], -1)
+
+        batch_image = batch_image.numpy()
+        batch_palette = batch_palette.numpy()
+        batch_palette_original = batch_palette_original.numpy()
+
+        results = []
+        for image, palette, palette_original in zip(batch_image, batch_palette, batch_palette_original):
+            # creates a tree of similar colors
+            palette_tree = KDTree(palette)
+            # finds the closest color index for each pixel
+            _, indices = palette_tree.query(image)
+            # creates the image quantized to the palette
+            result = palette_original[indices]
+            # adds the just palette-quantized image to the results batch
+            results.append(result)
+
+        results = tf.stack(results)
+        return results
+
+
 class Pix2PixModel(S2SModel):
-    def __init__(self, train_ds, test_ds, model_name, architecture_name, lambda_l1, keep_checkpoint):
-        super().__init__(train_ds, test_ds, model_name, architecture_name, keep_checkpoint)
+    def __init__(self, config):
+        super().__init__(config)
 
-        self.lambda_l1 = lambda_l1
-
-        self.generator = self.create_generator()
-        self.discriminator = self.create_discriminator()
+        self.lambda_l1 = config.lambda_l1
         self.loss_object = tf.keras.losses.BinaryCrossentropy(from_logits=True)
 
-        generator_params = tf.reduce_sum([tf.reduce_prod(v.get_shape()) for v in self.generator.trainable_weights])
-        discriminator_params = tf.reduce_sum(
-            [tf.reduce_prod(v.get_shape()) for v in self.discriminator.trainable_weights])
-
-        print(f"Generator: {self.generator.name} with {generator_params:,} parameters")
-        print(f"Discriminator: {self.discriminator.name} with {discriminator_params:,} parameters")
-
-        self.generator_optimizer = tf.keras.optimizers.Adam(0.0002, beta_1=0.5)
-        self.discriminator_optimizer = tf.keras.optimizers.Adam(0.0002, beta_1=0.5)
-        self.checkpoint = tf.train.Checkpoint(
-            generator_optimizer=self.generator_optimizer,
-            discriminator_optimizer=self.discriminator_optimizer,
-            generator=self.generator,
-            discriminator=self.discriminator)
-        self.checkpoint_manager = tf.train.CheckpointManager(self.checkpoint, directory=self.checkpoint_dir,
-                                                             max_to_keep=1)
 
     def create_generator(self):
-        return UnetGenerator(4, 4, "tanh")
+        real_generator = UnetGenerator(4, 4, "tanh")
+        if self.config.post_process is not None and self.config.post_process != "none":
+            self.proxy_generator = PostProcessGenerator(real_generator, self.config.post_process)
+        else:
+            self.proxy_generator = real_generator
+        return real_generator
 
     def create_discriminator(self):
         return PatchDiscriminator(4)
@@ -57,10 +100,10 @@ class Pix2PixModel(S2SModel):
 
     def generate(self, batch):
         source_image, _ = batch
-        return self.generator(source_image, training=True)
+        return self.proxy_generator(source_image, training=True)
 
     @tf.function
-    def train_step(self, batch, step, update_steps):
+    def train_step(self, batch, step, evaluate_steps, t):
         source_image, real_image = batch
 
         with tf.GradientTape(persistent=True) as tape:
@@ -84,9 +127,9 @@ class Pix2PixModel(S2SModel):
 
         with self.summary_writer.as_default():
             with tf.name_scope("generator"):
-                self.log_generator_loss(g_loss, step // update_steps)
+                self.log_generator_loss(g_loss, step // evaluate_steps)
             with tf.name_scope("discriminator"):
-                self.log_discriminator_loss(d_loss, step // update_steps)
+                self.log_discriminator_loss(d_loss, step // evaluate_steps)
 
     def log_generator_loss(self, g_loss, step):
         total_loss, adversarial_loss, l1_loss = g_loss
@@ -100,14 +143,14 @@ class Pix2PixModel(S2SModel):
         tf.summary.scalar("real_loss", real_loss, step=step)
         tf.summary.scalar("fake_loss", fake_loss, step=step)
 
-    def select_examples_for_visualization(self, number_of_examples=6):
-        num_train_examples = number_of_examples // 2
-        num_test_examples = number_of_examples - num_train_examples
+    def select_examples_for_visualization(self, train_ds, test_ds):
+        num_train_examples = 3
+        num_test_examples = 3
 
-        train_examples = self.train_ds.unbatch().take(num_train_examples).batch(1)
-        test_examples = self.test_ds.unbatch().take(num_test_examples).batch(1)
+        train_examples = train_ds.unbatch().take(num_train_examples).batch(1)
+        test_examples = test_ds.unbatch().take(num_test_examples).batch(1)
 
-        return list(test_examples.as_numpy_iterator()) + list(train_examples.as_numpy_iterator())
+        return list(train_examples.as_numpy_iterator()) + list(test_examples.as_numpy_iterator())
 
     def select_examples_for_evaluation(self, num_images, dataset):
         real_images = np.ndarray((num_images, IMG_SIZE, IMG_SIZE, 4))
@@ -115,37 +158,69 @@ class Pix2PixModel(S2SModel):
         dataset = dataset.unbatch().take(num_images).batch(1)
 
         for i, (source_image, real_image) in dataset.enumerate():
-            fake_image = self.generator(source_image, training=True)
+            fake_image = self.proxy_generator(source_image, training=True)
             real_images[i] = real_image[0].numpy()
             fake_images[i] = fake_image[0].numpy()
 
         return real_images, fake_images
 
+    def initialize_random_examples_for_evaluation(self, train_ds, test_ds, num_images):
+        def initialize_random_examples_from_dataset(dataset):
+            source_images, target_images = next(iter(dataset.unbatch().batch(num_images).take(1)))
+            return target_images, source_images
+
+        return dict({
+            "train": initialize_random_examples_from_dataset(train_ds),
+            "test": initialize_random_examples_from_dataset(test_ds.shuffle(self.config.test_size))
+        })
+
+    def generate_images_for_evaluation(self, example_indices_for_evaluation):
+        generator = self.generator
+        def generate_images_from_dataset(dataset_name):
+            target_images, source_images = example_indices_for_evaluation[dataset_name]
+            fake_images = generator(source_images, training=True)
+            return target_images, fake_images
+
+        return dict({
+            "train": generate_images_from_dataset("train"),
+            "test": generate_images_from_dataset("test")
+        })
+
     def evaluate_l1(self, real_images, fake_images):
         return tf.reduce_mean(tf.abs(fake_images - real_images))
 
     def preview_generated_images_during_training(self, examples, save_name, step):
+        has_postprocess_columns = self.config.post_process != "none"
         title = ["Input", "Target", "Generated", "Input histo", "Target histo", "Generated histo"]
+        if has_postprocess_columns:
+            title = title[:3] + ["Post-processed"] + title[3:] + ["Pstpcssd histo"]
         num_images = len(examples)
         num_columns = len(title)
 
         if step is not None:
             title[-1] += f" ({step / 1000}k)"
         figure = plt.figure(figsize=(4 * num_columns, 4 * num_images))
-        predicted_images = []
 
+        predicted_images = []
         source_image_histograms = [histogram.calculate_rgbuv_histogram(image[0]) for image in examples]
         target_image_histograms = [histogram.calculate_rgbuv_histogram(image[1]) for image in examples]
         predicted_images_histograms = []
+        post_processed_images_histograms = []
 
         for i, (source_image, target_image) in enumerate(examples):
             if i >= len(predicted_images):
                 predicted_image = self.generator(source_image, training=True)
                 predicted_images.append(predicted_image)
                 predicted_images_histograms.append(
-                    histogram.calculate_rgbuv_histogram(predicted_image[tf.newaxis, ...]))
+                    histogram.calculate_rgbuv_histogram(predicted_image))
 
             images = [source_image, target_image, predicted_images[i]]
+            if has_postprocess_columns:
+                post_processed_image = self.proxy_generator(source_image, training=True)
+                images += [post_processed_image]
+                post_processed_images_histograms.append(
+                    histogram.calculate_rgbuv_histogram(post_processed_image))
+
             for j in range(len(images)):
                 idx = i * num_columns + j + 1
                 plt.subplot(num_images, num_columns, idx)
@@ -154,6 +229,9 @@ class Pix2PixModel(S2SModel):
                 plt.axis("off")
 
             histograms = [source_image_histograms[i], target_image_histograms[i], predicted_images_histograms[i]]
+            if has_postprocess_columns:
+                histograms += [post_processed_images_histograms[i]]
+
             for j in range(len(histograms)):
                 idx += 1
                 plt.subplot(num_images, num_columns, idx)
@@ -173,10 +251,26 @@ class Pix2PixModel(S2SModel):
 
         return figure
 
-    def debug_discriminator_patches(self, batch_of_one):
+    def generate_images_from_dataset(self, dataset, step, num_images=None):
+        if num_images is None:
+            num_images = dataset.unbatch().cardinality()
+
+        base_image_path = self.get_output_folder("test-images")
+
+        io_utils.delete_folder(base_image_path)
+        io_utils.ensure_folder_structure(base_image_path)
+
+        for i, (source, target) in dataset.unbatch().take(num_images).batch(1).enumerate():
+            image_path = os.sep.join([base_image_path, f"{i}_at_step_{step}.png"])
+            fig = self.preview_generated_images_during_training([(source, target)], image_path, step)
+            plt.close(fig)
+
+        print(f"Generated {i + 1} images in the test-images folder.")
+
+    def debug_discriminator_output(self, batch, image_path):
         # generates the fake image and the discriminations of the real and fake
-        source_image, real_image = batch_of_one
-        fake_image = self.generator(source_image, training=True)
+        source_image, real_image = batch
+        fake_image = self.proxy_generator(source_image, training=True)
 
         real_predicted = self.discriminator([real_image, source_image])
         fake_predicted = self.discriminator([fake_image, source_image])
@@ -245,23 +339,22 @@ class Pix2PixModel(S2SModel):
 
 
 class Pix2PixAugmentedModel(Pix2PixModel):
-    def __init__(self, train_ds, test_ds, model_name, architecture_name, lambda_l1, keep_checkpoint):
-        super().__init__(train_ds, test_ds, model_name, architecture_name, lambda_l1, keep_checkpoint)
+    def __init__(self, config):
+        super().__init__(config)
 
 
 class Pix2PixHistogramModel(Pix2PixAugmentedModel):
-    def __init__(self, train_ds, test_ds, model_name, architecture_name, lambda_l1, lambda_histogram, histo_loss,
-                 keep_checkpoint):
-        super().__init__(train_ds, test_ds, model_name, architecture_name, lambda_l1, keep_checkpoint)
-        self.lambda_histogram = lambda_histogram
-        if histo_loss == "hellinger":
+    def __init__(self, config):
+        super().__init__(config)
+        self.lambda_histogram = config.lambda_histogram
+        if config.histo_loss == "hellinger":
             self.histo_loss = histogram.hellinger_loss
-        elif histo_loss == "l1":
+        elif config.histo_loss == "l1":
             self.histo_loss = histogram.l1_loss
-        elif histo_loss == "l2":
+        elif config.histo_loss == "l2":
             self.histo_loss = histogram.l2_loss
         else:
-            raise Exception(f"Unrecognized histogram loss passed to the model: {histo_loss}")
+            raise Exception(f"Unrecognized histogram loss passed to the model: {config.histo_loss}")
 
     def generator_loss(self, fake_predicted, fake_image, real_image):
         real_histogram = histogram.calculate_rgbuv_histogram(real_image)
@@ -283,10 +376,9 @@ class Pix2PixHistogramModel(Pix2PixAugmentedModel):
 
 
 class Pix2PixIndexedModel(Pix2PixModel):
-    def __init__(self, train_ds, test_ds, model_name, architecture_name, lambda_segmentation=0.5,
-                 keep_checkpoint=False):
-        super().__init__(train_ds, test_ds, model_name, architecture_name, 0., keep_checkpoint)
-        self.lambda_segmentation = lambda_segmentation
+    def __init__(self, config):
+        super().__init__(config)
+        self.lambda_segmentation = config.lambda_segmentation
         self.segmentation_loss_object = tf.keras.losses.CategoricalCrossentropy(from_logits=False)
 
     def create_generator(self):
@@ -317,7 +409,7 @@ class Pix2PixIndexedModel(Pix2PixModel):
         fake_image = tf.expand_dims(tf.argmax(fake_image_probabilities, axis=-1, output_type="int32"), -1)
         return fake_image, fake_image_probabilities
 
-    def train_step(self, batch, step, update_steps):
+    def train_step(self, batch, step, evaluate_steps, t):
         # batch: source_image, real_image, palette
         source_image, real_image, _ = batch
         batch_size = tf.shape(real_image)[0]
@@ -345,9 +437,9 @@ class Pix2PixIndexedModel(Pix2PixModel):
 
         with self.summary_writer.as_default():
             with tf.name_scope("generator"):
-                self.log_generator_loss(g_loss, step // update_steps)
+                self.log_generator_loss(g_loss, step // evaluate_steps)
             with tf.name_scope("discriminator"):
-                self.log_discriminator_loss(d_loss, step // update_steps)
+                self.log_discriminator_loss(d_loss, step // evaluate_steps)
 
     def log_generator_loss(self, g_loss, step):
         _, _, _, segmentation_loss = g_loss
@@ -398,7 +490,7 @@ class Pix2PixIndexedModel(Pix2PixModel):
         # generates the fake image and the discriminations of the real and fake
         source_image, real_image, palette = batch_of_one
 
-        fake_image = self.generator(source_image, training=True)
+        fake_image = self.proxy_generator(source_image, training=True)
         fake_image = tf.expand_dims(tf.argmax(fake_image, axis=-1, output_type="int32"), -1)
 
         real_predicted = self.discriminator([real_image, source_image])[0]

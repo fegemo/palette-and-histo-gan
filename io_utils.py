@@ -2,7 +2,9 @@ import shutil
 import io
 import tensorflow as tf
 from matplotlib import pyplot as plt
+from tensorflow import RaggedTensorSpec
 
+import dataset_utils
 from configuration import *
 
 
@@ -65,6 +67,38 @@ def extract_palette(image, palette_ordering, channels=OUTPUT_CHANNELS):
 
     return colors
 
+INVALID_COLOR = tf.constant([32768, 32768, 32768, 32768])
+
+def batch_extract_palette(images):
+    def single_extract_palette(image):
+        channels = tf.shape(image)[-1]
+
+        # incoming image shape: (s, s, channels)
+        # reshaping to: (s*s, channels)
+        image = tf.cast(image, "int32")
+        image = tf.reshape(image, [-1, channels])
+
+        # colors are sorted as they appear in the image sweeping from top-left to bottom-right
+        colors, _ = tf.raw_ops.UniqueV2(x=image, axis=[0])
+        return colors
+
+    """
+    Extracts the palette of each image in the batch, returning a ragged tensor of shape [b, (colors), c]
+    :param images:
+    :return:
+    """
+    images = dataset_utils.denormalize(images)
+    images = tf.cast(images, tf.int32)
+
+    palettes_ragged = tf.map_fn(fn=single_extract_palette, elems=images,
+                                fn_output_signature=RaggedTensorSpec(
+                                    ragged_rank=0,
+                                    dtype=tf.int32))
+    palettes = tf.RaggedTensor.to_tensor(palettes_ragged, default_value=INVALID_COLOR)
+    palettes = tf.cast(palettes, tf.float32)
+    palettes = dataset_utils.normalize(palettes)
+
+    return palettes
 
 @tf.function
 def rgba_to_single_int(values_in_rgba):

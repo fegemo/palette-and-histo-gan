@@ -9,7 +9,7 @@ from configuration import *
 # TFJS does this by default, but TF does not
 # The TFJS imported model was having bad inference because of this
 def blacken_transparent_pixels(image):
-    mask = tf.math.equal(image[:, :, 3], 0)
+    mask = tf.math.equal(image[..., 3], 0)
     repeated_mask = tf.repeat(mask, INPUT_CHANNELS)
     condition = tf.reshape(repeated_mask, image.shape)
 
@@ -222,12 +222,24 @@ def create_rgba_image_loader(sprite_side_source, sprite_side_target, dataset_siz
     return load_images
 
 
-def load_rgba_ds(source_direction, target_direction, should_augment_hue=True, should_augment_translation=True):
-    train_dataset = tf.data.Dataset.range(TRAIN_SIZE).shuffle(TRAIN_SIZE)
-    test_dataset = tf.data.Dataset.range(TEST_SIZE).shuffle(TEST_SIZE)
+# def load_rgba_ds(source_direction, target_direction, should_augment_hue=True, should_augment_translation=True):
+def load_rgba_ds(config):
+    source_direction = config.source_index
+    target_direction = config.target_index
+    train_sizes = config.train_sizes
+    train_size = config.train_size
+    test_size = config.test_size
+    test_sizes = config.test_sizes
+    batch_size = config.batch
+    prevent_augmentation = config.model == "baseline-no-aug"
+    should_augment_hue = not prevent_augmentation and not config.no_hue
+    should_augment_translation = not prevent_augmentation and not config.no_tran
+
+    train_dataset = tf.data.Dataset.range(train_size).shuffle(train_size)
+    test_dataset = tf.data.Dataset.range(test_size)
 
     train_dataset = train_dataset \
-        .map(create_rgba_image_loader(source_direction, target_direction, TRAIN_SIZES, "train"),
+        .map(create_rgba_image_loader(source_direction, target_direction, train_sizes, "train"),
              num_parallel_calls=tf.data.AUTOTUNE)
 
     should_augment = should_augment_hue or should_augment_translation
@@ -238,27 +250,37 @@ def load_rgba_ds(source_direction, target_direction, should_augment_hue=True, sh
 
     train_dataset = train_dataset \
         .map(normalize_two, num_parallel_calls=tf.data.AUTOTUNE) \
-        .batch(BATCH_SIZE)
+        .batch(batch_size)
 
-    test_dataset = test_dataset.map(create_rgba_image_loader(source_direction, target_direction, TEST_SIZES, "test"),
+    test_dataset = test_dataset.map(create_rgba_image_loader(source_direction, target_direction, test_sizes, "test"),
                                     num_parallel_calls=tf.data.AUTOTUNE) \
         .map(normalize_two, num_parallel_calls=tf.data.AUTOTUNE) \
-        .batch(BATCH_SIZE)
+        .batch(batch_size)
     return train_dataset, test_dataset
 
 
-def load_indexed_ds(source_direction, target_direction, palette_ordering):
-    train_dataset = tf.data.Dataset.range(TRAIN_SIZE).shuffle(TRAIN_SIZE)
-    test_dataset = tf.data.Dataset.range(TEST_SIZE).shuffle(TEST_SIZE)
+# def load_indexed_ds(source_direction, target_direction, palette_ordering):
+def load_indexed_ds(config):
+    source_direction = config.source_index
+    target_direction = config.target_index
+    palette_ordering = config.palette_ordering
+    train_size = config.train_size
+    train_sizes = config.train_sizes
+    test_size = config.test_size
+    test_sizes = config.test_sizes
+    batch_size = config.batch
+
+    train_dataset = tf.data.Dataset.range(train_size).shuffle(train_size)
+    test_dataset = tf.data.Dataset.range(test_size)
 
     train_dataset = train_dataset \
-        .map(create_indexed_image_loader(source_direction, target_direction, TRAIN_SIZES, "train", palette_ordering),
+        .map(create_indexed_image_loader(source_direction, target_direction, train_sizes, "train", palette_ordering),
              num_parallel_calls=tf.data.AUTOTUNE) \
-        .batch(BATCH_SIZE)
+        .batch(batch_size)
 
     test_dataset = test_dataset \
-        .map(create_indexed_image_loader(source_direction, target_direction, TEST_SIZES, "test", palette_ordering),
+        .map(create_indexed_image_loader(source_direction, target_direction, test_sizes, "test", palette_ordering),
              num_parallel_calls=tf.data.AUTOTUNE) \
-        .batch(BATCH_SIZE)
+        .batch(batch_size)
 
     return train_dataset, test_dataset

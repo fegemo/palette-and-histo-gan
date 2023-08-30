@@ -1,5 +1,7 @@
 import argparse
 import os
+import sys
+import datetime
 from math import ceil
 
 SEED = 47
@@ -18,23 +20,10 @@ DIRECTION_FRONT = DIRECTIONS.index("front")  # 2
 DIRECTION_RIGHT = DIRECTIONS.index("right")  # 3
 # ["0-back", "1-left", "2-front", "3-right"]
 DIRECTION_FOLDERS = [f"{i}-{name}" for i, name in enumerate(DIRECTIONS)]
-
-DATASET_MASK = [1, 1, 1, 1, 1]
-DATASET_SIZES = [912, 216, 294, 408, 12372]
-DATASET_SIZES = [n * m for n, m in zip(DATASET_SIZES, DATASET_MASK)]
-
-DATASET_SIZE = sum(DATASET_SIZES)
 TRAIN_PERCENTAGE = 0.85
-TRAIN_SIZES = [ceil(n * TRAIN_PERCENTAGE) for n in DATASET_SIZES]
-TRAIN_SIZE = sum(TRAIN_SIZES)
-TEST_SIZES = [DATASET_SIZES[i] - TRAIN_SIZES[i]
-              for i, n in enumerate(DATASET_SIZES)]
-# TEST_SIZES = [0, 0, 44, 0, 0]
-TEST_SIZE = sum(TEST_SIZES)
 
-BUFFER_SIZE = DATASET_SIZE
+
 BATCH_SIZE = 4
-
 IMG_SIZE = 64
 INPUT_CHANNELS = 4
 OUTPUT_CHANNELS = 4
@@ -43,7 +32,7 @@ OUTPUT_CHANNELS = 4
 MAX_PALETTE_SIZE = 256
 INVALID_INDEX_COLOR = [255, 0, 220, 255]  # some hotpink
 
-TEMP_FOLDER = "temp-side2side"
+LOG_FOLDER = "temp-side2side"
 
 
 class SingletonMeta(type):
@@ -75,6 +64,9 @@ class OptionParser(metaclass=SingletonMeta):
     def initialize(self):
         self.parser.add_argument(
             "model", help="one from { baseline-no-aug, baseline, indexed, histogram } - the model to train")
+        self.parser.add_argument("--image-size", help="size of squared images", default=IMG_SIZE, type=int)
+        self.parser.add_argument("--output-channels", help="size of squared images", default=OUTPUT_CHANNELS, type=int)
+        self.parser.add_argument("--input-channels", help="size of squared images", default=INPUT_CHANNELS, type=int)
         self.parser.add_argument("--verbose", help="outputs verbosity information",
                                  default=False, action="store_true")
 
@@ -119,11 +111,12 @@ class OptionParser(metaclass=SingletonMeta):
                                  default="grayness")
         self.parser.add_argument("--batch", type=int, help="the batch size", default=4)
         self.parser.add_argument(
-            "--lambda_l1", type=float, help="value for lambda_l1 used in baselines and histogram", default=100.)
-        self.parser.add_argument("--lambda_segmentation", type=float,
-                                 help="value for lambda_segmentation used in indexed mode", default=0.01)
-        self.parser.add_argument("--lambda_histogram", type=float,
-                                 help="value for lambda_histogram used in histogram mode", default=1.)
+            "--lambda-l1", type=float, help="value for lambda_l1 used in baselines and histogram", default=100.)
+        self.parser.add_argument("--lambda-segmentation", type=float,
+                                 help="value for lambda-segmentation used in indexed mode", default=0.01)
+        self.parser.add_argument("--lambda-histogram", type=float,
+                                 help="value for lambda-histogram used in histogram mode", default=1.)
+        self.parser.add_argument("--lr", type=float, help="learning rate", default=0.0002)
         self.parser.add_argument("--epochs", type=int, help="number of epochs to train", default=160)
         self.parser.add_argument("--no-aug", action="store_true", help="Disables all augmentation", default=False)
         self.parser.add_argument("--no-hue", action="store_true", help="Disables hue augmentation", default=False)
@@ -144,15 +137,20 @@ class OptionParser(metaclass=SingletonMeta):
                                       "on the train and test sets",
                                  default=False, action="store_true")
         self.parser.add_argument("--save-model", help="saves the model at the end", default=False, action="store_true")
-        self.parser.add_argument("--keep-checkpoint", help="checkpoints training", default=False, action="store_true")
+        self.parser.add_argument("--model-name", help="architecture name", default="some-architecture")
+        self.parser.add_argument("--experiment", help="description of this experiment", default="playground")
         self.parser.add_argument(
             "--log-folder", help="the folder in which the training procedure saves the logs", default="temp-side2side")
+        self.parser.add_argument("--post-process", help="post-processes the generated images using one from { none, rgb, yuv, cielab }", default="none")
         self.initialized = True
 
-    def parse(self):
+    def parse(self, args=None, return_parser=False):
+        if args is None:
+            args = sys.argv[1:]
         if not self.initialized:
             self.initialize()
-        self.values = self.parser.parse_args()
+        self.values = self.parser.parse_args(args)
+
         setattr(self.values, "source_index", ["back", "left", "front", "right"].index(self.values.source))
         setattr(self.values, "target_index", ["back", "left", "front", "right"].index(self.values.target))
         setattr(self.values, "seed", SEED)
@@ -163,38 +161,55 @@ class OptionParser(metaclass=SingletonMeta):
         setattr(self.values, "datasets_used", datasets_used)
         if len(datasets_used) == 0:
             raise Exception("No dataset was supplied with: --tiny, --rm2k, --rmxp, --rmvx, --misc")
-
-        global DATASET_MASK
-        global DATASET_SIZES
-        global DATASET_SIZE
-        global TRAIN_SIZES
-        global TEST_SIZES
-        global TRAIN_SIZE
-        global TEST_SIZE
-        global BUFFER_SIZE
-
-        DATASET_MASK = list(
+        setattr(self.values, "dataset_names", DATASET_NAMES)
+        setattr(self.values, "data_folders", [
+            os.sep.join(["datasets", folder])
+            for folder
+            in self.values.dataset_names
+        ])
+        setattr(self.values, "run_string", datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
+        dataset_mask = list(
             map(lambda opt: 1 if getattr(self.values, opt) else 0, ["tiny", "rm2k", "rmxp", "rmvx", "misc"]))
-        DATASET_SIZES = [912, 216, 294, 408, 12372]
-        DATASET_SIZES = [n * m for n, m in zip(DATASET_SIZES, DATASET_MASK)]
-        DATASET_SIZE = sum(DATASET_SIZES)
-        TRAIN_SIZES = [ceil(n * TRAIN_PERCENTAGE) for n in DATASET_SIZES]
-        TRAIN_SIZE = sum(TRAIN_SIZES)
-        TEST_SIZES = [DATASET_SIZES[i] - TRAIN_SIZES[i]
-                      for i, n in enumerate(DATASET_SIZES)]
+        dataset_sizes = [912, 216, 294, 408, 12372]
+        dataset_sizes = [n * m for n, m in zip(dataset_sizes, dataset_mask)]
+        train_sizes = [ceil(n * TRAIN_PERCENTAGE) for n in dataset_sizes]
+        train_size = sum(train_sizes)
+        test_sizes = [dataset_sizes[i] - train_sizes[i]
+                      for i, n in enumerate(dataset_sizes)]
         if self.values.rmxp_validation:
-            TEST_SIZES = [0, 0, 44, 0, 0]
+            test_sizes = [0, 0, 44, 0, 0]
         elif self.values.rm2k_validation:
-            TEST_SIZES = [0, 32, 0, 0, 0]
+            test_sizes = [0, 32, 0, 0, 0]
         elif self.values.rmvx_validation:
-            TEST_SIZES = [0, 0, 0, 61, 0]
+            test_sizes = [0, 0, 0, 61, 0]
         elif self.values.tiny_validation:
-            TEST_SIZES = [136, 0, 0, 0, 0]
+            test_sizes = [136, 0, 0, 0, 0]
 
-        TEST_SIZE = sum(TEST_SIZES)
-        BUFFER_SIZE = DATASET_SIZE
+        test_size = sum(test_sizes)
 
-        return self.values
+        setattr(self.values, "dataset_sizes", dataset_sizes)
+        setattr(self.values, "dataset_mask", dataset_mask)
+        setattr(self.values, "train_sizes", train_sizes)
+        setattr(self.values, "train_size", train_size)
+        setattr(self.values, "test_sizes", test_sizes)
+        setattr(self.values, "test_size", test_size)
+
+
+        if return_parser:
+            return self.values, self
+        else:
+            return self.values
+
+    def get_description(self, param_separator=",", key_value_separator="-"):
+        sorted_args = sorted(vars(self.values).items())
+        description = param_separator.join(map(lambda p: f"{p[0]}{key_value_separator}{p[1]}", sorted_args))
+        return description
+
+    def save_configuration(self, folder_path):
+        from io_utils import ensure_folder_structure
+        ensure_folder_structure(folder_path)
+        with open(os.sep.join([folder_path, "configuration.txt"]), "w") as file:
+            file.write(self.get_description("\n", ": ") + "\n")
 
 
 def in_notebook():
@@ -209,9 +224,9 @@ def in_notebook():
     return True
 
 
-if not in_notebook():
-    options = OptionParser().parse()
-
-    BATCH_SIZE = options.batch
-    MAX_PALETTE_SIZE = options.max_palette_size
-    TEMP_FOLDER = options.log_folder
+# if not in_notebook():
+#     options = OptionParser().parse(sys.argv)
+#
+#     BATCH_SIZE = options.batch
+#     MAX_PALETTE_SIZE = options.max_palette_size
+#     LOG_FOLDER = options.log_folder

@@ -1,3 +1,5 @@
+import sys
+
 import tensorflow as tf
 from math import ceil
 
@@ -6,9 +8,9 @@ from configuration import OptionParser
 from pix2pix_model import Pix2PixModel, Pix2PixAugmentedModel, Pix2PixIndexedModel, Pix2PixHistogramModel
 import setup
 
-options = OptionParser().parse()
-if options.verbose:
-    print("Running with options: ", options)
+config, parser = OptionParser().parse(sys.argv[1:], True)
+if config.verbose:
+    print("Running with options: ", config)
     print("Tensorflow version: ", tf.__version__)
 
     if tf.test.gpu_device_name():
@@ -17,95 +19,77 @@ if options.verbose:
         print("Not using a GPU - it will take long!!")
 
 # check if datasets need unzipping
-if options.verbose:
-    print("Datasets used: ", options.datasets_used)
-setup.ensure_datasets(options.verbose)
+if config.verbose:
+    print("Datasets used: ", config.datasets_used)
+setup.ensure_datasets(config.verbose)
 
 # setting the seed
-if options.verbose:
-    print("SEED set to: ", options.seed)
-tf.random.set_seed(options.seed)
+if config.verbose:
+    print("SEED set to: ", config.seed)
+tf.random.set_seed(config.seed)
 
 # loading the dataset according to the required model
-if options.model == "baseline-no-aug":
-    train_ds, test_ds = load_rgba_ds(
-        options.source_index, options.target_index, should_augment_hue=False, should_augment_translation=False)
-elif options.model == "baseline":
-    train_ds, test_ds = load_rgba_ds(options.source_index, options.target_index,
-                                     should_augment_hue=(not options.no_hue),
-                                     should_augment_translation=(not options.no_tran))
-elif options.model == "indexed":
-    train_ds, test_ds = load_indexed_ds(
-        options.source_index, options.target_index, palette_ordering=options.palette_ordering)
-elif options.model == "histogram":
-    train_ds, test_ds = load_rgba_ds(options.source_index, options.target_index,
-                                     should_augment_hue=(not options.no_hue),
-                                     should_augment_translation=(not options.no_tran))
+if config.model in ["baseline-no-aug", "baseline", "histogram"]:
+    train_ds, test_ds = load_rgba_ds(config)
+elif config.model == "indexed":
+    train_ds, test_ds = load_indexed_ds(config)
 else:
     raise SystemExit(
-        f"The specified model {options.model} was not recognized.")
+        f"The specified model {config.model} was not recognized.")
 
 # instantiates the proper model
-architecture_name = f"{options.source}-to-{options.target}"
+config.model_name = f"{config.source}-to-{config.target}"
+config.experiment = config.model
 
-if options.model == "baseline-no-aug":
-    model = Pix2PixModel(
-        train_ds=train_ds,
-        test_ds=test_ds,
-        model_name="baseline (no aug.)",
-        architecture_name=architecture_name,
-        lambda_l1=options.lambda_l1,
-        keep_checkpoint=options.keep_checkpoint)
-elif options.model == "baseline":
-    model = Pix2PixAugmentedModel(
-        train_ds=train_ds,
-        test_ds=test_ds,
-        model_name="baseline",
-        architecture_name=architecture_name,
-        lambda_l1=options.lambda_l1,
-        keep_checkpoint=options.keep_checkpoint)
-elif options.model == "indexed":
-    model = Pix2PixIndexedModel(
-        train_ds=train_ds,
-        test_ds=test_ds,
-        model_name="indexed",
-        architecture_name=architecture_name,
-        lambda_segmentation=options.lambda_segmentation,
-        keep_checkpoint=options.keep_checkpoint)
-elif options.model == "histogram":
-    model = Pix2PixHistogramModel(
-        train_ds=train_ds,
-        test_ds=test_ds,
-        model_name="histogram",
-        architecture_name=architecture_name,
-        lambda_l1=options.lambda_l1,
-        lambda_histogram=options.lambda_histogram,
-        histo_loss=options.histo_loss,
-        keep_checkpoint=options.keep_checkpoint)
+if config.model == "baseline-no-aug":
+    class_name = Pix2PixModel
+elif config.model == "baseline":
+    class_name = Pix2PixAugmentedModel
+elif config.model == "indexed":
+    class_name = Pix2PixIndexedModel
+elif config.model == "histogram":
+    class_name = Pix2PixHistogramModel
+else:
+    raise Exception(f"The asked model of {config.model} was not found.")
+
+model = class_name(config)
+
+model.save_model_description(model.get_output_folder())
+if config.verbose:
+    model.discriminator.summary()
+    model.generator.summary()
+parser.save_configuration(model.get_output_folder())
 
 # configuration for training
-steps = ceil(train_ds.cardinality() / options.batch) * options.epochs
-update_steps = steps // 40
+steps = ceil(config.train_size / config.batch) * config.epochs
+evaluate_steps = steps // 40
+# evaluate_steps = 500
 
 print(
-    f"Starting training for {options.epochs} epochs in {steps} steps, updating visualization every "
-    f"{update_steps} steps...")
+    f"Starting training for {config.epochs} epochs in {steps} steps, updating visualization every "
+    f"{evaluate_steps} steps...")
 
 # starting training
 callbacks = [c[len("callback_"):] for c in ["callback_show_discriminator_output", "callback_evaluate_fid",
                                             "callback_evaluate_l1"] if
-             getattr(options, c)]
+             getattr(config, c)]
 
-model.fit(steps, update_steps, callbacks=callbacks)
+model.fit(train_ds, test_ds, steps, evaluate_steps, callbacks=callbacks)
+
+# restores the best generator (best l1 - priority, or best fid)
+step = model.restore_best_generator()
+print(f"Restored the BEST generator, which was in step {step}.")
 
 # generating resulting images
-model.generate_images_from_dataset()
+print(f"Starting to generate the images from the test dataset with generator from step {step}...")
+model.generate_images_from_dataset(test_ds, step)
 
-if options.save_model:
+if config.save_model:
     print(f"Saving the generator...")
     model.save_generator()
 
 print("Finished executing.")
 
 # python train.py histogram --rm2k --lambda_l1 30 --lambda_histogram 1 --no-aug --histo-loss hellinger --callback-evaluate-fid --callback-evaluate-l1 --batch 1 --log-folder temp-side2side/histogram/histo0,l130,hellinger,b1
-
+# python train.py baseline --rmxp --lambda-l1 100 --no-tran --callback-evaluate-fid --callback-evaluate-l1 --batch 4 --log-folder temp-side2side/postprocess/yuv --post-process yuv
+# python train.py baseline --rmxp --lambda-l1 100 --callback-evaluate-fid --callback-evaluate-l1 --batch 4 --log-folder temp-side2side/postprocess/lab,aug --post-process cielab
