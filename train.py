@@ -84,9 +84,8 @@ print(f"Restored the BEST generator, which was in step {step}.")
 print(f"Starting to generate the images from the test dataset with generator from step {step}...")
 model.generate_images_from_dataset(test_ds, step)
 
-if config.save_model:
-    print(f"Saving the generator...")
-    model.save_generator()
+print(f"Saving the generator...")
+model.save_generator()
 
 print("Finished executing.")
 

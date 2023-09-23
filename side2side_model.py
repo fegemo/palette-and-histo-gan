@@ -194,7 +194,7 @@ class S2SModel(ABC):
         print("\nAbout to exit the training loop...")
 
         # if no evaluation callback was used, we save a single checkpoint with the end of the training
-        if not S2SModel.should_evaluate(callbacks):
+        if not S2SModel.should_evaluate(callbacks) or self.config.save_last_model:
             self.save_generator_checkpoint(tf.constant(steps, dtype=tf.int32))
 
     def update_training_metrics(self, metric_name, value, step, should_save_checkpoint=False):
