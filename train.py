@@ -69,8 +69,8 @@ else:
         f"The specified model {config.model} was not recognized.")
 
 # instantiates the proper model
-config.model_name = f"{config.source}-to-{config.target}"
-config.experiment = config.model
+# config.model_name = f"{config.source}-to-{config.target}"
+# config.experiment = config.model
 
 if config.model == "baseline-no-aug":
     class_name = Pix2PixModel
