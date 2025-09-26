@@ -1,5 +1,7 @@
+import gc
 import os
 import numpy
+import numpy as np
 from numpy import cov
 from numpy import trace
 from numpy import iscomplexobj
@@ -22,10 +24,24 @@ def _scale_images(images, new_shape):
     return asarray(images_list)
 
 
-def _calculate_fid(model, images1, images2):
+def _calculate_fid(model, images1, images2, batch_size=136):
+    act1 = np.empty((len(images1), 2048))
+    act2 = np.empty((len(images2), 2048))
+
+    gc.collect()
+    for batch_start in range(0, len(images1), batch_size):
+        batch_end = batch_start + batch_size
+        batch_end = min(batch_end, len(images1))
+
+        act1[batch_start:batch_end] = model.predict(images1[batch_start:batch_end], verbose=0)
+        act2[batch_start:batch_end] = model.predict(images2[batch_start:batch_end], verbose=0)
+
+    gc.collect()
+
     # calculate activations
-    act1 = model.predict(images1, verbose=0)
-    act2 = model.predict(images2, verbose=0)
+    # act1 = model.predict(images1, verbose=0)
+    # act2 = model.predict(images2, verbose=0)
+
     # calculate mean and covariance statistics
     mu1, sigma1 = act1.mean(axis=0), cov(act1, rowvar=False)
     mu2, sigma2 = act2.mean(axis=0), cov(act2, rowvar=False)

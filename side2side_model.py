@@ -120,13 +120,22 @@ class S2SModel(ABC):
             self.summary_writer.flush()
 
     def do_fit(self, train_ds, test_ds, steps, evaluate_steps=1000, callbacks=[], starting_step=0):
-        num_test_images = min(self.config.test_size, 136)
+        # num_test_images = min(self.config.test_size, 136)
+        num_test_images = self.config.test_size
         examples_for_visualization = self.select_examples_for_visualization(train_ds, test_ds)
+        # print("type(examples_for_visualization)", type(examples_for_visualization))
+        # print("len(examples_for_visualization)", len(examples_for_visualization))
+        # print("type(examples_for_visualization[0])", type(examples_for_visualization[0]))
+        # print("len(examples_for_visualization[0])", len(examples_for_visualization[0]))
+        # print("examples_for_visualization[0][0].shape", examples_for_visualization[0][0].shape)
         example_indices_for_evaluation = []
         examples_for_evaluation = []
         if S2SModel.should_evaluate(callbacks):
             example_indices_for_evaluation = self.initialize_random_examples_for_evaluation(train_ds, test_ds,
                                                                                             num_test_images)
+            # print("type(example_indices_for_evaluation['train'])", type(example_indices_for_evaluation['train']))
+            # print("len(example_indices_for_evaluation['train'])", len(example_indices_for_evaluation['train']))
+            # print("example_indices_for_evaluation['train'][0].shape", example_indices_for_evaluation['train'][0].shape)
 
         training_start_time = time.time()
         step_start_time = training_start_time

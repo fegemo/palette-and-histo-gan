@@ -6,7 +6,6 @@ from scipy.spatial import KDTree
 
 import histogram
 import io_utils
-from dataset_utils import blacken_transparent_pixels
 from networks import *
 from side2side_model import S2SModel
 
@@ -19,7 +18,7 @@ class PostProcessGenerator(tf.keras.Model):
 
     def __call__(self, batch, **kwargs):
         fake_image = self.real_generator(batch, **kwargs)
-        palette = io_utils.batch_extract_palette(batch)
+        palette = io_utils.batch_extract_palette(batch, )
         post_processed_fake_image = self.quantize_to_palette(fake_image, palette)
 
         return post_processed_fake_image
@@ -74,7 +73,9 @@ class Pix2PixModel(S2SModel):
 
 
     def create_generator(self):
-        real_generator = UnetGenerator(4, 4, "tanh")
+        config = self.config
+        real_generator = UnetGenerator(config.image_size, config.inner_channels, config.output_channels,
+                                       "tanh")
         if self.config.post_process is not None and self.config.post_process != "none":
             self.proxy_generator = PostProcessGenerator(real_generator, self.config.post_process)
         else:
@@ -82,7 +83,8 @@ class Pix2PixModel(S2SModel):
         return real_generator
 
     def create_discriminator(self):
-        return PatchDiscriminator(4)
+        config = self.config
+        return PatchDiscriminator(config.image_size, config.inner_channels)
 
     def generator_loss(self, fake_predicted, fake_image, real_image):
         adversarial_loss = self.loss_object(tf.ones_like(fake_predicted), fake_predicted)
@@ -153,8 +155,9 @@ class Pix2PixModel(S2SModel):
         return list(train_examples.as_numpy_iterator()) + list(test_examples.as_numpy_iterator())
 
     def select_examples_for_evaluation(self, num_images, dataset):
-        real_images = np.ndarray((num_images, IMG_SIZE, IMG_SIZE, 4))
-        fake_images = np.ndarray((num_images, IMG_SIZE, IMG_SIZE, 4))
+        c = self.config
+        real_images = np.ndarray((num_images, c.image_size, c.image_size, 4))
+        fake_images = np.ndarray((num_images, c.image_size, c.image_size, 4))
         dataset = dataset.unbatch().take(num_images).batch(1)
 
         for i, (source_image, real_image) in dataset.enumerate():
@@ -166,8 +169,7 @@ class Pix2PixModel(S2SModel):
 
     def initialize_random_examples_for_evaluation(self, train_ds, test_ds, num_images):
         def initialize_random_examples_from_dataset(dataset):
-            source_images, target_images = next(iter(dataset.unbatch().batch(num_images).take(1)))
-            return target_images, source_images
+            return next(iter(dataset.unbatch().batch(num_images).take(1)))
 
         return dict({
             "train": initialize_random_examples_from_dataset(train_ds),
@@ -260,14 +262,15 @@ class Pix2PixModel(S2SModel):
         io_utils.delete_folder(base_image_path)
         io_utils.ensure_folder_structure(base_image_path)
 
-        for i, (source, target) in dataset.unbatch().take(num_images).batch(1).enumerate():
+        for i, batch in dataset.unbatch().take(num_images).batch(1).enumerate():
             image_path = os.sep.join([base_image_path, f"{i}_at_step_{step}.png"])
-            fig = self.preview_generated_images_during_training([(source, target)], image_path, step)
+            fig = self.preview_generated_images_during_training([[*batch]], image_path, step)
             plt.close(fig)
 
         print(f"Generated {i + 1} images in the test-images folder.")
 
     def debug_discriminator_output(self, batch, image_path):
+        c = self.config
         # generates the fake image and the discriminations of the real and fake
         source_image, real_image = batch
         fake_image = self.proxy_generator(source_image, training=True)
@@ -286,9 +289,9 @@ class Pix2PixModel(S2SModel):
 
         # makes the patches have the same resolution as the real/fake images by repeating and tiling
         num_patches = tf.shape(real_predicted)[0]
-        lower_bound_scaling_factor = IMG_SIZE // num_patches
-        pad_before = (IMG_SIZE - num_patches * lower_bound_scaling_factor) // 2
-        pad_after = (IMG_SIZE - num_patches * lower_bound_scaling_factor) - pad_before
+        lower_bound_scaling_factor = c.image_size // num_patches
+        pad_before = (c.image_size - num_patches * lower_bound_scaling_factor) // 2
+        pad_after = (c.image_size - num_patches * lower_bound_scaling_factor) - pad_before
 
         real_predicted = tf.repeat(tf.repeat(real_predicted, lower_bound_scaling_factor, axis=0),
                                    lower_bound_scaling_factor, axis=1)
@@ -382,10 +385,12 @@ class Pix2PixIndexedModel(Pix2PixModel):
         self.segmentation_loss_object = tf.keras.losses.CategoricalCrossentropy(from_logits=False)
 
     def create_generator(self):
-        return UnetGenerator(1, MAX_PALETTE_SIZE, "softmax")
+        gen = UnetGenerator(self.config.image_size, self.config.input_channels,
+                             self.config.output_channels, "softmax")
+        return gen
 
     def create_discriminator(self):
-        return PatchDiscriminator(1)
+        return PatchDiscriminator(self.config.image_size, self.config.input_channels)
 
     def generator_loss(self, fake_predicted, fake_image, real_image):
         segmentation_loss = self.segmentation_loss_object(real_image, fake_image)
@@ -401,23 +406,25 @@ class Pix2PixIndexedModel(Pix2PixModel):
         source_image, _, palette = batch
         fake_image_probabilities = self.generator(source_image, training=True)
         fake_image = tf.expand_dims(tf.argmax(fake_image_probabilities, axis=-1, output_type="int32"), -1)
-        return fake_image
-
-    def generate_with_probs(self, batch):
-        source_image, _, palette = batch
-        fake_image_probabilities = self.generator(source_image, training=True)
-        fake_image = tf.expand_dims(tf.argmax(fake_image_probabilities, axis=-1, output_type="int32"), -1)
         return fake_image, fake_image_probabilities
 
+    def generate_rgba(self, batch):
+        _, _, palette = batch
+        fake_image, _ = self.generate(batch)
+        fake_image = io_utils.batch_indexed_to_rgba(fake_image, palette)
+        return fake_image
+
+    @tf.function
     def train_step(self, batch, step, evaluate_steps, t):
+        c = self.config
         # batch: source_image, real_image, palette
         source_image, real_image, _ = batch
         batch_size = tf.shape(real_image)[0]
 
-        real_image_one_hot = tf.reshape(tf.one_hot(real_image, MAX_PALETTE_SIZE, axis=-1),
-                                        [batch_size, IMG_SIZE, IMG_SIZE, -1])
+        real_image_one_hot = tf.reshape(tf.one_hot(real_image, c.max_palette_size, axis=-1),
+                                        [batch_size, c.image_size, c.image_size, c.max_palette_size])
         with tf.GradientTape(persistent=True) as tape:
-            fake_image, fake_image_probabilities = self.generate_with_probs(batch)
+            fake_image, fake_image_probabilities = self.generate(batch)
 
             real_predicted = self.discriminator([real_image, source_image], training=True)
             fake_predicted = self.discriminator([fake_image, source_image], training=True)
@@ -457,20 +464,30 @@ class Pix2PixIndexedModel(Pix2PixModel):
         predicted_images = []
 
         for i, batch in enumerate(examples):
-            source_image, target_image, palette = batch
-            palette = palette[0]
-
             if i >= len(predicted_images):
-                generated_image = self.generate(batch)
+                # if i == 0:
+                #     print("PPPPPP batch inside preview bf generate_rgba", type(batch))
+                #     print("batch[0][0].shape", batch[0][0].shape)
+                #     print("tf.reduce_max(batch[0][0])", tf.reduce_max(batch[0][0]))
+                #     print("tf.reduce_max(batch[1][0])", tf.reduce_max(batch[1][0]))
+                #     print("tf.reduce_max(batch[2][0])", tf.reduce_max(batch[2][0]))
+                #     show_single_image(batch[0][0], "batch[0][0] inside preview")
+                #     show_single_image(batch[1][0], "batch[1][0] inside preview")
+                generated_image = self.generate_rgba(batch)
+                # if i == 0:
+                #     print("tf.reduce_max(generated_image[0])", tf.reduce_max(generated_image[0]))
+                #     show_single_image(generated_image[0]*0.5+0.5, "generated_image[0] inside preview")
                 predicted_images.append(generated_image)
 
+            source_image, target_image, palette = batch
+            source_image = io_utils.batch_indexed_to_rgba(source_image, palette)
+            target_image = io_utils.batch_indexed_to_rgba(target_image, palette)
             images = [source_image, target_image, predicted_images[i]]
             for j in range(num_columns):
                 idx = i * num_columns + j + 1
                 plt.subplot(num_images, num_columns, idx)
                 plt.title(title[j] if i == 0 else "", fontdict={"fontsize": 24})
-                image = images[j][0]
-                image = io_utils.indexed_to_rgba(image, palette)
+                image = tf.squeeze(images[j]) * 0.5 + 0.5
                 plt.imshow(image)
                 plt.axis("off")
 
@@ -487,6 +504,7 @@ class Pix2PixIndexedModel(Pix2PixModel):
         return figure
 
     def debug_discriminator_patches(self, batch_of_one):
+        c = self.config
         # generates the fake image and the discriminations of the real and fake
         source_image, real_image, palette = batch_of_one
 
@@ -501,9 +519,9 @@ class Pix2PixIndexedModel(Pix2PixModel):
 
         # makes the patches have the same resolution as the real/fake images by repeating and tiling
         num_patches = tf.shape(real_predicted)[0]
-        lower_bound_scaling_factor = IMG_SIZE // num_patches
-        pad_before = (IMG_SIZE - num_patches * lower_bound_scaling_factor) // 2
-        pad_after = (IMG_SIZE - num_patches * lower_bound_scaling_factor) - pad_before
+        lower_bound_scaling_factor = c.image_size // num_patches
+        pad_before = (c.image_size - num_patches * lower_bound_scaling_factor) // 2
+        pad_after = (c.image_size - num_patches * lower_bound_scaling_factor) - pad_before
 
         real_predicted = tf.repeat(tf.repeat(real_predicted, lower_bound_scaling_factor, axis=0),
                                    lower_bound_scaling_factor, axis=1)
@@ -548,13 +566,14 @@ class Pix2PixIndexedModel(Pix2PixModel):
         plt.show()
 
     def select_examples_for_evaluation(self, num_images, dataset):
-        real_images = np.ndarray((num_images, IMG_SIZE, IMG_SIZE, 4))
-        fake_images = np.ndarray((num_images, IMG_SIZE, IMG_SIZE, 4))
+        image_size = self.config.image_size
+        real_images = np.ndarray((num_images, image_size, image_size, 4))
+        fake_images = np.ndarray((num_images, image_size, image_size, 4))
         dataset = dataset.unbatch().take(num_images).batch(1)
 
         for i, batch in dataset.enumerate():
             source_image, real_image, palette = batch
-            fake_image = self.generate(batch)
+            fake_image = self.generate_rgba(batch)
 
             real_image = real_image[0]
             fake_image = fake_image[0]
@@ -567,3 +586,37 @@ class Pix2PixIndexedModel(Pix2PixModel):
             fake_images[i] = fake_image.numpy()
 
         return real_images, fake_images
+
+    def generate_images_for_evaluation(self, example_indices_for_evaluation):
+        def generate_images_from_dataset(dataset_name):
+            batch = example_indices_for_evaluation[dataset_name]
+            # print("EEEEEE batch inside gen_evaluate bf generate_rgba", type(batch))
+            # print("batch[0][0].shape", batch[0][0].shape)
+            # print("tf.reduce_max(batch[0][0])", tf.reduce_max(batch[0][0]))
+            # print("tf.reduce_max(batch[1][0])", tf.reduce_max(batch[1][0]))
+            # print("tf.reduce_max(batch[2][0])", tf.reduce_max(batch[2][0]))
+            # show_single_image(batch[0][0], "batch[0][0] inside gen_evaluate")
+            # show_single_image(batch[1][0], "batch[1][0] inside gen_evaluate")
+
+            fake_images = self.generate_rgba(batch)
+            # print("tf.reduce_max(fake_images[0])", tf.reduce_max(fake_images[0]))
+            # show_single_image(fake_images[0]*0.5+0.5, "fake_images[0] inside gen_evaluate")
+            source_image, target_image, palette = batch
+            real_images = io_utils.batch_indexed_to_rgba(target_image, palette)
+            return real_images, fake_images
+
+        return dict({
+            "train": generate_images_from_dataset("train"),
+            "test": generate_images_from_dataset("test")
+        })
+
+
+
+
+
+def show_single_image(image, title=""):
+    plt.figure()
+    plt.title(title)
+    plt.imshow(image)
+    plt.axis("off")
+    plt.show()

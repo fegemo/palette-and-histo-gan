@@ -61,9 +61,9 @@ if config.verbose:
 parser.save_configuration(model.get_output_folder())
 
 # configuration for training
-steps = ceil(config.train_size / config.batch) * config.epochs
-evaluate_steps = steps // 40
-# evaluate_steps = 500
+steps = config.steps
+epochs = config.epochs
+evaluate_steps = config.evaluate_steps
 
 print(
     f"Starting training for {config.epochs} epochs in {steps} steps, updating visualization every "

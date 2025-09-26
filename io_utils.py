@@ -8,6 +8,8 @@ import dataset_utils
 from configuration import *
 
 
+INVALID_COLOR = tf.constant([255, 0, 255, 255])
+
 def ensure_folder_structure(*folders):
     is_absolute_path = os.path.isabs(folders[0])
     provided_paths = []
@@ -26,14 +28,15 @@ def delete_folder(path):
 
 
 @tf.function
-def extract_palette(image, palette_ordering, channels=OUTPUT_CHANNELS):
+def extract_palette(image, palette_ordering, max_palette_size, channels):
     """
     Extracts the unique colors from an image (3D tensor)
     Parameters
     ----------
     image a 3D tensor with shape (height, width, channels)
     palette_ordering either "grayness", "top2bottom", "bottom2top", or "shuffled"
-    channels the number of channels of the image
+    max_palette_size the maximum number of colors to be extracted
+    channels the number of channels of the image loaded from the disk (typically 4, as they are RGBA images)
 
     Returns a tensor of colors (RGB) sorted by the number of times each one appears and from dark to light as a
     second sorting key.
@@ -60,14 +63,13 @@ def extract_palette(image, palette_ordering, channels=OUTPUT_CHANNELS):
         colors, _, count = tf.raw_ops.UniqueWithCountsV2(x=image, axis=[0])
         colors = tf.random.shuffle(colors)
 
-    # fills the palette to have 256 colors, so batches can be created (otherwise they can't, tf complains)
+    # fills the palette to have max_palette_size colors, so batches can be created (otherwise they can't, tf complains)
     num_colors = tf.shape(colors)[0]
-    fillers = tf.repeat([INVALID_INDEX_COLOR], [MAX_PALETTE_SIZE - num_colors], axis=0)
+    fillers = tf.repeat([INVALID_COLOR], [max_palette_size - num_colors], axis=0)
     colors = tf.concat([colors, fillers], axis=0)
 
     return colors
 
-INVALID_COLOR = tf.constant([32768, 32768, 32768, 32768])
 
 def batch_extract_palette(images):
     def single_extract_palette(image):
@@ -130,15 +132,25 @@ def rgba_to_indexed(image, palette):
 
 @tf.function
 def indexed_to_rgba(indexed_image, palette):
-    image_shape = tf.shape(indexed_image)
-    image_rgb = tf.gather(palette, indexed_image)
-
+    s = tf.shape(indexed_image)[1]
+    c = tf.shape(palette)[-1]
+    image_rgba = tf.gather(palette, indexed_image)
     # now the shape is (HEIGHT, WIDTH, 1, CHANNELS), so we need to reshape
-    image_rgb = tf.reshape(image_rgb, [image_shape[0], image_shape[1], -1])
-    return image_rgb
+    image_rgba = tf.reshape(image_rgba, [s, s, c])
+    image_rgba = tf.cast(image_rgba, tf.float32) / 127.5 - 1.0
+    return image_rgba
+
+def batch_indexed_to_rgba(indexed_images, palettes):
+    b, s, _, _ = tf.shape(indexed_images)
+    c = tf.shape(palettes)[-1]
+    image_rgba = tf.gather(palettes, indexed_images, batch_dims=1)
+    image_rgba = tf.reshape(image_rgba, [b, s, s, c])
+    image_rgba = tf.cast(image_rgba, tf.float32) / 127.5 - 1.0
+    return image_rgba
 
 
-def plot_to_image(matplotlib_figure, channels=OUTPUT_CHANNELS):
+def plot_to_image(matplotlib_figure, channels):
+    channels = min(4, channels)
     """Converts the matplotlib plot specified by 'figure' to a PNG image and
     returns it. The supplied figure is closed and inaccessible after this call."""
     # Save the plot to a PNG in memory.

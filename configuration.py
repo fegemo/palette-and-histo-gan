@@ -13,13 +13,13 @@ DATA_FOLDERS = [
     in DATASET_NAMES
 ]
 
-DIRECTIONS = ["back", "left", "front", "right"]
-DIRECTION_BACK = DIRECTIONS.index("back")  # 0
-DIRECTION_LEFT = DIRECTIONS.index("left")  # 1
-DIRECTION_FRONT = DIRECTIONS.index("front")  # 2
-DIRECTION_RIGHT = DIRECTIONS.index("right")  # 3
+DOMAINS = ["back", "left", "front", "right"]
+# DIRECTION_BACK = DIRECTIONS.index("back")  # 0
+# DIRECTION_LEFT = DIRECTIONS.index("left")  # 1
+# DIRECTION_FRONT = DIRECTIONS.index("front")  # 2
+# DIRECTION_RIGHT = DIRECTIONS.index("right")  # 3
 # ["0-back", "1-left", "2-front", "3-right"]
-DIRECTION_FOLDERS = [f"{i}-{name}" for i, name in enumerate(DIRECTIONS)]
+# DIRECTION_FOLDERS = [f"{i}-{name}" for i, name in enumerate(DIRECTIONS)]
 TRAIN_PERCENTAGE = 0.85
 
 
@@ -27,10 +27,6 @@ BATCH_SIZE = 4
 IMG_SIZE = 64
 INPUT_CHANNELS = 4
 OUTPUT_CHANNELS = 4
-
-# for indexed colors
-MAX_PALETTE_SIZE = 256
-INVALID_INDEX_COLOR = [255, 0, 220, 255]  # some hotpink
 
 LOG_FOLDER = "temp-side2side"
 
@@ -65,8 +61,14 @@ class OptionParser(metaclass=SingletonMeta):
         self.parser.add_argument(
             "model", help="one from { baseline-no-aug, baseline, indexed, histogram } - the model to train")
         self.parser.add_argument("--image-size", help="size of squared images", default=IMG_SIZE, type=int)
-        self.parser.add_argument("--output-channels", help="size of squared images", default=OUTPUT_CHANNELS, type=int)
-        self.parser.add_argument("--input-channels", help="size of squared images", default=INPUT_CHANNELS, type=int)
+        self.parser.add_argument("--output-channels", help="channels of the images output from the "
+                                                           "generator, being 4 (default) or 3 (RGBA images are "
+                                                           "converted to RGB during load time in this case). Becomes "
+                                                           "MAX_PALETTE_SIZE for the indexed model",
+                                 default=OUTPUT_CHANNELS, type=int)
+        self.parser.add_argument("--input-channels", help="channels of the input images, being 4 "
+                                                          "(default, RGBA images) or 3 (RGB images) or 1 (indexed)",
+                                 default=INPUT_CHANNELS, type=int)
         self.parser.add_argument("--verbose", help="outputs verbosity information",
                                  default=False, action="store_true")
 
@@ -118,6 +120,9 @@ class OptionParser(metaclass=SingletonMeta):
                                  help="value for lambda-histogram used in histogram mode", default=1.)
         self.parser.add_argument("--lr", type=float, help="learning rate", default=0.0002)
         self.parser.add_argument("--epochs", type=int, help="number of epochs to train", default=160)
+        self.parser.add_argument("--steps", type=int, help="number of generator update steps to train", default=None)
+        self.parser.add_argument("--evaluate-steps", type=int, help="number of generator update steps "
+                                                                    "to wait until an evaluation is done", default=1000)
         self.parser.add_argument("--no-aug", action="store_true", help="Disables all augmentation", default=False)
         self.parser.add_argument("--no-hue", action="store_true", help="Disables hue augmentation", default=False)
         self.parser.add_argument("--no-tran", action="store_true", help="Disables translation augmentation",
@@ -141,6 +146,8 @@ class OptionParser(metaclass=SingletonMeta):
         self.parser.add_argument("--experiment", help="description of this experiment", default="playground")
         self.parser.add_argument(
             "--log-folder", help="the folder in which the training procedure saves the logs", default="temp-side2side")
+        self.parser.add_argument("--domains", help="domain folder names (w/o number, but in order)",
+                                 default=DOMAINS, nargs="+")
         self.parser.add_argument("--post-process", help="post-processes the generated images using one from { none, rgb, yuv, cielab }", default="none")
         self.initialized = True
 
@@ -167,7 +174,9 @@ class OptionParser(metaclass=SingletonMeta):
             for folder
             in self.values.dataset_names
         ])
+        setattr(self.values, "domain_folders", [f"{i}-{name}" for i, name in enumerate(self.values.domains)])
         setattr(self.values, "run_string", datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
+
         dataset_mask = list(
             map(lambda opt: 1 if getattr(self.values, opt) else 0, ["tiny", "rm2k", "rmxp", "rmvx", "misc"]))
         dataset_sizes = [912, 216, 294, 408, 12372]
@@ -194,6 +203,15 @@ class OptionParser(metaclass=SingletonMeta):
         setattr(self.values, "test_sizes", test_sizes)
         setattr(self.values, "test_size", test_size)
 
+        if self.values.steps is None:
+            self.values.steps = ceil(self.values.epochs * self.values.train_size / self.values.batch)
+        else:
+            self.values.epochs = ceil(self.values.steps * self.values.batch / self.values.train_size)
+
+        if self.values.model == "indexed":
+            setattr(self.values, "input_channels", 1)
+        setattr(self.values, "output_channels", self.values.max_palette_size if self.values.model == "indexed" else self.values.output_channels)
+        setattr(self.values, "inner_channels", min(self.values.input_channels, self.values.output_channels))
 
         if return_parser:
             return self.values, self

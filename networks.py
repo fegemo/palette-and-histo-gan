@@ -36,23 +36,23 @@ def unet_upsample(filters, size, apply_dropout=False, init=tf.random_normal_init
     return result
 
 
-def PatchDiscriminator(input_channels):
+def PatchDiscriminator(image_size, inner_channels):
     initializer = tf.random_normal_initializer(0., 0.02)
 
-    source_image = layers.Input(shape=[IMG_SIZE, IMG_SIZE, input_channels], name="source_image")
-    target_image = layers.Input(shape=[IMG_SIZE, IMG_SIZE, input_channels], name="target_image")
+    source_image = layers.Input(shape=[image_size, image_size, inner_channels], name="source_image")
+    target_image = layers.Input(shape=[image_size, image_size, inner_channels], name="target_image")
 
-    x = layers.concatenate([target_image, source_image])                            # (batch_size, 64, 64, channels*2)
-    down = unet_downsample(64, 4, False)(x)                                         # (batch_size, 32, 32,         64)
-    last = layers.Conv2D(1, 4, padding="same",                                      # (batch_size, 32, 32,          1)
+    x = layers.concatenate([target_image, source_image])                           # (batch_size, 64, 64, channels*2)
+    down = unet_downsample(64, 4, False)(x)              # (batch_size, 32, 32,         64)
+    last = layers.Conv2D(1, 4, padding="same",                    # (batch_size, 32, 32,          1)
                          kernel_initializer=initializer)(down)
 
     return tf.keras.Model(inputs=[target_image, source_image], outputs=last, name="patch-disc")
 
 
-def UnetGenerator(input_channels, output_channels, last_activation):
+def UnetGenerator(image_size, inner_channels, output_channels, last_activation):
     init = tf.random_normal_initializer(0., 0.02)
-    inputs = layers.Input(shape=[IMG_SIZE, IMG_SIZE, input_channels])               # (batch_size, 64, 64, 4 or 1)
+    inputs = layers.Input(shape=[image_size, image_size, inner_channels])               # (batch_size, 64, 64, 4/3/max_palette_size)
 
     down_stack = [
         unet_downsample( 64, 4, apply_batchnorm=False, init=init),                  # (batch_size, 32, 32,   64)
@@ -72,7 +72,7 @@ def UnetGenerator(input_channels, output_channels, last_activation):
         unet_upsample( 32, 4, init=init),                                           # (batch_size, 64, 64,   36)
     ]
 
-    last = layers.Conv2D(output_channels, 4,                                        # (batch_size, 64, 64, 4 or 256)
+    last = layers.Conv2D(output_channels, 4,                                        # (batch_size, 64, 64, 3/4 or max_palette_size)
                          padding="same",
                          kernel_initializer=init,
                          activation=last_activation)

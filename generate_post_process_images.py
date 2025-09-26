@@ -36,7 +36,7 @@ if __name__ == '__main__':
     random.seed(47)
 
     # loads the model
-    model = UnetGenerator(4, 4, "tanh")
+    model = UnetGenerator(4, 4, 4, "tanh",)
     surrogate_root = tf.train.Checkpoint(generator=model)
     surrogate_root.restore(tf.train.latest_checkpoint(f"output-gmod/new-post-process/front-to-right/baseline/20230911-103923/training-checkpoints"))
     # surrogate_root.restore(tf.train.latest_checkpoint(f"output-gmod/postprocess/none,no-aug/front-to-right/baseline/20230819-102720/training-checkpoints"))

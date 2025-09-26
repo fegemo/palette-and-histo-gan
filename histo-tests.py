@@ -62,7 +62,7 @@ l2_losses = l2_loss(histograms_real, histograms_fake)
 for c in range(histograms_real.shape[0]):
     # if c == 0 or (c+1) % 6 != 0:
     #     continue
-    plt.figure()
+    fig = plt.figure(figsize=(4*3, 4*2))
     plt.subplot(3, 2, 1)
     plt.imshow(images_real[c])
     plt.axis("off")
@@ -86,5 +86,6 @@ for c in range(histograms_real.shape[0]):
     l2dist = np.sum(np.power(histograms_real[c] - histograms_fake[c], 2))
     # plt.suptitle(f"hdist: {hdist:.5f} / hellinger: {hellinger_losses:.5f} / l1: {l1_losses:.5f}, l2: {l2_losses:.5f}")
     plt.suptitle(f"hdist: {hdist:.5f}  / l1: {l1dist:.5f}, l2: {l2dist:.5f}")
+    fig.tight_layout()
 
 plt.show()
