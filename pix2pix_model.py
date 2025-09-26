@@ -1,11 +1,13 @@
-import numpy as np
-from IPython import display
-from matplotlib import pyplot as plt
+import os
+
 import tensorflow_io as tfio
+import numpy as np
+from matplotlib import pyplot as plt
 from scipy.spatial import KDTree
 
 import histogram
 import io_utils
+from keras_utils import NParamsSupplier
 from networks import *
 from side2side_model import S2SModel
 
@@ -68,14 +70,16 @@ class Pix2PixModel(S2SModel):
     def __init__(self, config):
         super().__init__(config)
 
+        self.gen_supplier = NParamsSupplier(2 if config.palette_quantization else 1)
         self.lambda_l1 = config.lambda_l1
+        self.lambda_palette = config.lambda_palette
         self.loss_object = tf.keras.losses.BinaryCrossentropy(from_logits=True)
 
 
     def create_generator(self):
         config = self.config
         real_generator = UnetGenerator(config.image_size, config.inner_channels, config.output_channels,
-                                       "tanh")
+                                       "tanh", config.palette_quantization, config.temperature)
         if self.config.post_process is not None and self.config.post_process != "none":
             self.proxy_generator = PostProcessGenerator(real_generator, self.config.post_process)
         else:
@@ -86,12 +90,19 @@ class Pix2PixModel(S2SModel):
         config = self.config
         return PatchDiscriminator(config.image_size, config.inner_channels)
 
-    def generator_loss(self, fake_predicted, fake_image, real_image):
+    def get_annealing_layers(self):
+        return [self.generator.quantization] if self.config.palette_quantization else []
+
+    def generator_loss(self, fake_predicted, fake_image, real_image, palette, temperature):
         adversarial_loss = self.loss_object(tf.ones_like(fake_predicted), fake_predicted)
         l1_loss = tf.reduce_mean(tf.abs(real_image - fake_image))
-        total_loss = adversarial_loss + (self.lambda_l1 * l1_loss)
+        palette_loss = self.calculate_palette_loss(fake_image, palette, temperature)
 
-        return total_loss, adversarial_loss, l1_loss
+        total_loss = adversarial_loss + \
+                     self.lambda_l1 * l1_loss + \
+                     self.lambda_palette * palette_loss
+
+        return total_loss, adversarial_loss, l1_loss, palette_loss
 
     def discriminator_loss(self, real_predicted, fake_predicted):
         real_loss = self.loss_object(tf.ones_like(real_predicted), real_predicted)
@@ -108,13 +119,19 @@ class Pix2PixModel(S2SModel):
     def train_step(self, batch, step, evaluate_steps, t):
         source_image, real_image = batch
 
+        # updates the annealing scheduler to get the new temperature
+        temperature = self.annealing_scheduler.update(t)
+
+        # potentially extract the palette, in case we are using palette quantization
+        palette = self.extract_palette(source_image)
+
         with tf.GradientTape(persistent=True) as tape:
-            fake_image = self.generator(source_image, training=True)
+            fake_image = self.generator(self.gen_supplier(source_image, palette), training=True)
 
             real_predicted = self.discriminator([real_image, source_image], training=True)
             fake_predicted = self.discriminator([fake_image, source_image], training=True)
 
-            g_loss = self.generator_loss(fake_predicted, fake_image, real_image)
+            g_loss = self.generator_loss(fake_predicted, fake_image, real_image, palette, temperature)
             generator_total_loss = g_loss[0]
 
             d_loss = self.discriminator_loss(real_predicted, fake_predicted)
@@ -127,6 +144,8 @@ class Pix2PixModel(S2SModel):
         self.discriminator_optimizer.apply_gradients(
             zip(discriminator_gradients, self.discriminator.trainable_variables))
 
+        del tape
+
         with self.summary_writer.as_default():
             with tf.name_scope("generator"):
                 self.log_generator_loss(g_loss, step // evaluate_steps)
@@ -134,10 +153,11 @@ class Pix2PixModel(S2SModel):
                 self.log_discriminator_loss(d_loss, step // evaluate_steps)
 
     def log_generator_loss(self, g_loss, step):
-        total_loss, adversarial_loss, l1_loss = g_loss
+        total_loss, adversarial_loss, l1_loss, palette_loss = g_loss
         tf.summary.scalar("total_loss", total_loss, step=step)
         tf.summary.scalar("adversarial_loss", adversarial_loss, step=step)
         tf.summary.scalar("l1_loss", l1_loss, step=step)
+        tf.summary.scalar("palette_loss", palette_loss, step=step)
 
     def log_discriminator_loss(self, d_loss, step):
         total_loss, real_loss, fake_loss = d_loss
@@ -169,7 +189,8 @@ class Pix2PixModel(S2SModel):
 
     def initialize_random_examples_for_evaluation(self, train_ds, test_ds, num_images):
         def initialize_random_examples_from_dataset(dataset):
-            return next(iter(dataset.unbatch().batch(num_images).take(1)))
+            source_images, target_images = next(iter(dataset.unbatch().batch(num_images).take(1)))
+            return source_images, target_images
 
         return dict({
             "train": initialize_random_examples_from_dataset(train_ds),
@@ -179,8 +200,9 @@ class Pix2PixModel(S2SModel):
     def generate_images_for_evaluation(self, example_indices_for_evaluation):
         generator = self.generator
         def generate_images_from_dataset(dataset_name):
-            target_images, source_images = example_indices_for_evaluation[dataset_name]
-            fake_images = generator(source_images, training=True)
+            source_images, target_images = example_indices_for_evaluation[dataset_name]
+            palettes = self.extract_palette(source_images)
+            fake_images = generator(self.gen_supplier(source_images, palettes), training=False)
             return target_images, fake_images
 
         return dict({
@@ -189,18 +211,25 @@ class Pix2PixModel(S2SModel):
         })
 
     def evaluate_l1(self, real_images, fake_images):
+        # show_grid_of_images([real_images[:4], fake_images[:4]], ["Real", "Fake"])
         return tf.reduce_mean(tf.abs(fake_images - real_images))
 
     def preview_generated_images_during_training(self, examples, save_name, step):
         has_postprocess_columns = self.config.post_process != "none"
+        palette_quantization = self.config.palette_quantization
         title = ["Input", "Target", "Generated", "Input histo", "Target histo", "Generated histo"]
         if has_postprocess_columns:
             title = title[:3] + ["Post-processed"] + title[3:] + ["Pstpcssd histo"]
+        elif palette_quantization:
+            title = title[:3] + ["Generated (t=0)"] + title[3:] + ["Gen (t=0) histo"]
+            temperature = self.get_annealing_layers()[0].temperature.numpy()
+            title[2] = f"Gener. (t={float(temperature):.2f})"
         num_images = len(examples)
         num_columns = len(title)
 
         if step is not None:
             title[-1] += f" ({step / 1000}k)"
+
         figure = plt.figure(figsize=(4 * num_columns, 4 * num_images))
 
         predicted_images = []
@@ -208,10 +237,13 @@ class Pix2PixModel(S2SModel):
         target_image_histograms = [histogram.calculate_rgbuv_histogram(image[1]) for image in examples]
         predicted_images_histograms = []
         post_processed_images_histograms = []
+        zero_temperature_predicted_histograms = []
 
         for i, (source_image, target_image) in enumerate(examples):
+            source_image = tf.convert_to_tensor(source_image)
+            palette = self.extract_palette(source_image)
             if i >= len(predicted_images):
-                predicted_image = self.generator(source_image, training=True)
+                predicted_image = self.generator(self.gen_supplier(source_image, palette), training=True)
                 predicted_images.append(predicted_image)
                 predicted_images_histograms.append(
                     histogram.calculate_rgbuv_histogram(predicted_image))
@@ -222,6 +254,12 @@ class Pix2PixModel(S2SModel):
                 images += [post_processed_image]
                 post_processed_images_histograms.append(
                     histogram.calculate_rgbuv_histogram(post_processed_image))
+            elif palette_quantization:
+                predicted_image_zero_temp = self.generator(self.gen_supplier(source_image, palette),
+                                                           training=False)
+                images += [predicted_image_zero_temp]
+                zero_temperature_predicted_histograms.append(
+                    histogram.calculate_rgbuv_histogram(predicted_image_zero_temp))
 
             for j in range(len(images)):
                 idx = i * num_columns + j + 1
@@ -233,11 +271,14 @@ class Pix2PixModel(S2SModel):
             histograms = [source_image_histograms[i], target_image_histograms[i], predicted_images_histograms[i]]
             if has_postprocess_columns:
                 histograms += [post_processed_images_histograms[i]]
+            elif palette_quantization:
+                histograms += [zero_temperature_predicted_histograms[i]]
 
+            first_histogram_column_index = len(title) // 2
             for j in range(len(histograms)):
                 idx += 1
                 plt.subplot(num_images, num_columns, idx)
-                plt.title(title[j+3] if i == 0 else "", fontdict={"fontsize": 24})
+                plt.title(title[j+first_histogram_column_index] if i == 0 else "", fontdict={"fontsize": 24})
                 plt.imshow(np.squeeze(np.clip(histograms[j] * 100., 0., 1.)))
                 plt.axis("off")
 
@@ -245,11 +286,6 @@ class Pix2PixModel(S2SModel):
 
         if save_name is not None:
             plt.savefig(save_name, transparent=True)
-
-        # cannot call show otherwise it flushes and empties the figure, sending to tensorboard
-        # only a blank image... hence, let us just display the saved image
-        display.display(figure)
-        # plt.show()
 
         return figure
 
@@ -496,11 +532,6 @@ class Pix2PixIndexedModel(Pix2PixModel):
         if save_name is not None:
             plt.savefig(save_name)
 
-        # cannot call show otherwise it flushes and empties the figure, sending to tensorboard
-        # only a blank image... hence, let us just display the saved image
-        display.display(figure)
-        # plt.show()
-
         return figure
 
     def debug_discriminator_patches(self, batch_of_one):
@@ -619,4 +650,19 @@ def show_single_image(image, title=""):
     plt.title(title)
     plt.imshow(image)
     plt.axis("off")
+    plt.show()
+
+def show_grid_of_images(image_columns, titles):
+    num_columns = len(image_columns)
+    num_rows = len(image_columns[0])
+    plt.figure(figsize=(4 * num_columns, 4 * num_rows))
+    for i in range(num_rows):
+        for j in range(num_columns):
+            idx = i * num_columns + j + 1
+            plt.subplot(num_rows, num_columns, idx)
+            if i == 0:
+                plt.title(titles[j], fontdict={"fontsize": 24})
+            plt.imshow(np.clip(image_columns[j][i] * 0.5 + 0.5, 0., 1.))
+            plt.axis("off")
+    plt.tight_layout()
     plt.show()

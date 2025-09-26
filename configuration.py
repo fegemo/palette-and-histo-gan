@@ -71,7 +71,11 @@ class OptionParser(metaclass=SingletonMeta):
                                  default=INPUT_CHANNELS, type=int)
         self.parser.add_argument("--verbose", help="outputs verbosity information",
                                  default=False, action="store_true")
-
+        self.parser.add_argument("--annealing", help="one from {none, linear, cosine, expcosine}, used"
+                                                     " to control how the temperature decreases when using"
+                                                     " palette quantization", default="linear")
+        self.parser.add_argument("--temperature", type=float, help="initial temperature for"
+                                                                   " the annealing strategy", default=0.1)
         self.parser.add_argument("--rmxp", action="store_true", default=False, help="Uses RPG Maker XP dataset")
         self.parser.add_argument("--rm2k", action="store_true", default=False, help="Uses RPG Maker 2000"
                                                                                     " dataset")
@@ -118,6 +122,7 @@ class OptionParser(metaclass=SingletonMeta):
                                  help="value for lambda-segmentation used in indexed mode", default=0.01)
         self.parser.add_argument("--lambda-histogram", type=float,
                                  help="value for lambda-histogram used in histogram mode", default=1.)
+        self.parser.add_argument("--lambda-palette", type=float, help="value for λpalette", default=0.)
         self.parser.add_argument("--lr", type=float, help="learning rate", default=0.0002)
         self.parser.add_argument("--epochs", type=int, help="number of epochs to train", default=160)
         self.parser.add_argument("--steps", type=int, help="number of generator update steps to train", default=None)
@@ -129,6 +134,9 @@ class OptionParser(metaclass=SingletonMeta):
                                  default=False)
         self.parser.add_argument("--histo-loss", help="one of { hellinger, l1, l2 } to use as histogram loss",
                                  default="hellinger")
+        self.parser.add_argument("--palette-quantization", help="whether to use palette "
+                                                                "quantization in the generator",
+                                 action="store_true", default=False)
         self.parser.add_argument("--callback-show-discriminator-output",
                                  help="every few update steps, show the discriminator output with some images from "
                                       "the train and test sets",
@@ -149,6 +157,9 @@ class OptionParser(metaclass=SingletonMeta):
         self.parser.add_argument("--domains", help="domain folder names (w/o number, but in order)",
                                  default=DOMAINS, nargs="+")
         self.parser.add_argument("--post-process", help="post-processes the generated images using one from { none, rgb, yuv, cielab }", default="none")
+        self.parser.add_argument("--gpu", type=int, help="GPU index to use", default=0)
+        self.parser.add_argument("--vram", type=int, help="Amount of VRAM in MB to limit. Use 0 for "
+                                                          "default behavior and -1 for on-demand growth", default=0)
         self.initialized = True
 
     def parse(self, args=None, return_parser=False):
@@ -218,17 +229,18 @@ class OptionParser(metaclass=SingletonMeta):
         else:
             return self.values
 
-    def get_description(self, param_separator=",", key_value_separator="-"):
-        sorted_args = sorted(vars(self.values).items())
+    @staticmethod
+    def get_description(values, param_separator=",", key_value_separator="-"):
+        sorted_args = sorted(vars(values).items())
         description = param_separator.join(map(lambda p: f"{p[0]}{key_value_separator}{p[1]}", sorted_args))
         return description
 
-    def save_configuration(self, folder_path):
+    def save_configuration(self, folder_path, argv):
         from io_utils import ensure_folder_structure
         ensure_folder_structure(folder_path)
         with open(os.sep.join([folder_path, "configuration.txt"]), "w") as file:
-            file.write(self.get_description("\n", ": ") + "\n")
-
+            file.write(" ".join(argv) + "\n\n")
+            file.write(OptionParser.get_description(self.values, "\n", ": ") + "\n")
 
 def in_notebook():
     try:

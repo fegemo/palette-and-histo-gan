@@ -1,14 +1,17 @@
 from abc import ABC, abstractmethod
-import tensorflow as tf
 from tensorboard.plugins.custom_scalar import layout_pb2, summary as cs_summary
 import time
-import datetime
-from IPython import display
-from matplotlib import pyplot as plt
+import logging
+import gc
+import os
+import tensorflow as tf
 
 import io_utils
-from configuration import *
 import frechet_inception_distance as fid
+from keras_utils import LinearAnnealingScheduler, CosineAnnealingScheduler, ExpCosineAnnealingSchedule, \
+    NoopAnnealingScheduler, count_network_parameters
+from palette_utils import PaletteExtractor, PaletteExtractorDense, PaletteLossCalculator, PaletteLossCalculatorDense, \
+    NoopPaletteLossCalculator, NoopPaletteExtractor
 
 
 def show_eta(training_start_time, step_start_time, current_step, training_starting_step, total_steps,
@@ -20,9 +23,9 @@ def show_eta(training_start_time, step_start_time, current_step, training_starti
     remaining_steps = total_steps - steps_so_far
     eta = elapsed_per_step * remaining_steps
 
-    print(f"Time since start: {io_utils.seconds_to_human_readable(elapsed)}")
-    print(f"Estimated time to finish: {io_utils.seconds_to_human_readable(eta.numpy())}")
-    print(f"Last {update_steps} steps took: {now - step_start_time:.2f}s\n")
+    logging.info(f"Time since start: {io_utils.seconds_to_human_readable(elapsed)}")
+    logging.info(f"Estimated time to finish: {io_utils.seconds_to_human_readable(eta.numpy())}")
+    logging.info(f"Last {update_steps} steps took: {now - step_start_time:.2f}s\n")
 
 
 class S2SModel(ABC):
@@ -45,14 +48,37 @@ class S2SModel(ABC):
         self.checkpoint_dir = self.get_output_folder("training-checkpoints")
         self.layout_summary = S2SModel.create_layout_summary()
 
+        # initializes palette extractor and loss calculator, which might be no-ops if not using palette quantization
+        self.palette_extractor = PaletteExtractor() if config.palette_quantization else NoopPaletteExtractor()
+        self.palette_extractor_dense = PaletteExtractorDense() if config.palette_quantization else NoopPaletteExtractor()
+        self.palette_loss_calculator = PaletteLossCalculator() if config.palette_quantization else NoopPaletteLossCalculator()
+        self.palette_loss_calculator_dense = PaletteLossCalculatorDense() if config.palette_quantization else NoopPaletteLossCalculator()
+
         self.discriminator = self.create_discriminator()
         self.generator = self.create_generator()
 
-        generator_params = tf.reduce_sum([tf.reduce_prod(v.get_shape()) for v in self.generator.trainable_weights])
-        discriminator_params = tf.reduce_sum(
-            [tf.reduce_prod(v.get_shape()) for v in self.discriminator.trainable_weights])
-        print(f"Generator: {self.generator.name} with {generator_params:,} parameters")
-        print(f"Discriminator: {self.discriminator.name} with {discriminator_params:,} parameters")
+        generator_params = count_network_parameters(self.generator)
+        discriminator_params = count_network_parameters(self.discriminator)
+        logging.info(f"Generator: {self.generator.name} with {generator_params:,} parameters")
+        logging.info(f"Discriminator: {self.discriminator.name} with {discriminator_params:,} parameters")
+
+        # if config.palette_quantization, initialize the proper annealing scheduler
+        if config.palette_quantization:
+            if config.annealing == "linear":
+                self.annealing_scheduler = LinearAnnealingScheduler(config.temperature, self.get_annealing_layers())
+            elif config.annealing == "cosine":
+                # cycles: at least 4 cycles, but can be 60 cycles if steps == 240000
+                cycles = max(4, config.steps // 4000)
+                self.annealing_scheduler = CosineAnnealingScheduler(config.temperature, cycles,
+                                                                    self.get_annealing_layers())
+            elif config.annealing == "expcosine":
+                cycles = max(4, config.steps // 4000)
+                self.annealing_scheduler = ExpCosineAnnealingSchedule(config.temperature, cycles,
+                                                                       self.get_annealing_layers())
+            else:
+                raise ValueError(f"Unknown annealing method: {config.annealing}")
+        else:
+            self.annealing_scheduler = NoopAnnealingScheduler()
 
         # initializes training checkpoint information
         io_utils.ensure_folder_structure(self.checkpoint_dir)
@@ -123,19 +149,12 @@ class S2SModel(ABC):
         # num_test_images = min(self.config.test_size, 136)
         num_test_images = self.config.test_size
         examples_for_visualization = self.select_examples_for_visualization(train_ds, test_ds)
-        # print("type(examples_for_visualization)", type(examples_for_visualization))
-        # print("len(examples_for_visualization)", len(examples_for_visualization))
-        # print("type(examples_for_visualization[0])", type(examples_for_visualization[0]))
-        # print("len(examples_for_visualization[0])", len(examples_for_visualization[0]))
-        # print("examples_for_visualization[0][0].shape", examples_for_visualization[0][0].shape)
+
         example_indices_for_evaluation = []
         examples_for_evaluation = []
         if S2SModel.should_evaluate(callbacks):
             example_indices_for_evaluation = self.initialize_random_examples_for_evaluation(train_ds, test_ds,
                                                                                             num_test_images)
-            # print("type(example_indices_for_evaluation['train'])", type(example_indices_for_evaluation['train']))
-            # print("len(example_indices_for_evaluation['train'])", len(example_indices_for_evaluation['train']))
-            # print("example_indices_for_evaluation['train'][0].shape", example_indices_for_evaluation['train'][0].shape)
 
         training_start_time = time.time()
         step_start_time = training_start_time
@@ -146,9 +165,8 @@ class S2SModel(ABC):
             # every UPDATE_STEPS and in the beginning, visualize x images to see how training is going...
             it_is_time_to_evaluate = (step + 1) % evaluate_steps == 0 or step == 0 or step == steps - 1
             if it_is_time_to_evaluate:
-                display.clear_output(wait=True)
-
                 if step != 0:
+                    print("\n")
                     show_eta(training_start_time, step_start_time, step, starting_step, steps, evaluate_steps)
 
                 step_start_time = time.time()
@@ -158,7 +176,7 @@ class S2SModel(ABC):
                         self.get_output_folder(),
                         "step_{:06d},update_{:03d}.png".format(step + 1, (step + 1) // evaluate_steps)
                     ])
-                    print(f"Previewing images generated at step {step + 1} (train + test)...")
+                    logging.info(f"Previewing images generated at step {step + 1} (train + test)...")
                     image_data = self.preview_generated_images_during_training(examples_for_visualization,
                                                                                save_image_name, step + 1)
                     image_data = io_utils.plot_to_image(image_data, self.config.output_channels)
@@ -166,29 +184,39 @@ class S2SModel(ABC):
 
                 # check if we need to generate images for evaluation (and do it only once before the callback ifs)
                 if S2SModel.should_evaluate(callbacks):
+                    logging.info(
+                        f"Generating {len(example_indices_for_evaluation['test'][0]) * 2} images for evaluation...")
                     examples_for_evaluation = self.generate_images_for_evaluation(example_indices_for_evaluation)
 
                 # callbacks
                 if "debug_discriminator" in callbacks:
-                    print("Showing discriminator output patches (3 train + 3 test)...")
+                    logging.info("Showing discriminator output patches (3 train + 3 test)...")
                     self.show_discriminated_images(train_ds.unbatch(), "train", step + 1, 3)
                     self.show_discriminated_images(test_ds.unbatch().shuffle(self.config.test_size), "test",
                                                    step + 1, 3)
                 if "evaluate_l1" in callbacks:
-                    print(f"Comparing L1 between generated images from train and test...", end="", flush=True)
+                    logging.StreamHandler().terminator = ""
+                    logging.info(f"Comparing L1 between generated images from train and test...")
+                    logging.StreamHandler().terminator = "\n"
                     l1_train, l1_test = self.report_l1(examples_for_evaluation, step=(step + 1) // evaluate_steps)
-                    print(f" L1: {l1_train:.5f} / {l1_test:.5f} (train/test)")
+                    logging.info(f" L1: {l1_train:.5f} / {l1_test:.5f} (train/test)")
                     self.update_training_metrics("l1", l1_test, step + 1, True)
 
                 if "evaluate_fid" in callbacks:
-                    print(
+                    logging.info(
                         f"Calculating Fréchet Inception Distance at {(step + 1) / 1000}k with {num_test_images} "
                         f"examples...")
                     fid_train, fid_test = self.report_fid(examples_for_evaluation, step=(step + 1) // evaluate_steps)
-                    print(f"FID: {fid_train:.3f} / {fid_test:.3f} (train/test)")
+                    logging.info(f"FID: {fid_train:.3f} / {fid_test:.3f} (train/test)")
                     self.update_training_metrics("fid", fid_test, step + 1, "evaluate_l1" not in callbacks)
 
-                print(f"Step: {(step + 1) / 1000}k")
+                if S2SModel.should_evaluate(callbacks) and it_is_time_to_evaluate:
+                    # free the memory used by the generated examples
+                    del examples_for_evaluation
+                    examples_for_evaluation = None
+                    gc.collect()
+
+                logging.info(f"Step: {(step + 1) / 1000}k")
                 if step - starting_step < steps - 1:
                     print("_" * (evaluate_steps // 10))
 
@@ -200,7 +228,7 @@ class S2SModel(ABC):
             if (step + 1) % 10 == 0 and step - starting_step < steps - 1:
                 print(".", end="", flush=True)
 
-        print("\nAbout to exit the training loop...")
+        logging.info("\nAbout to exit the training loop...")
 
         # if no evaluation callback was used, we save a single checkpoint with the end of the training
         if not S2SModel.should_evaluate(callbacks) or self.config.save_last_model:
@@ -217,6 +245,17 @@ class S2SModel(ABC):
     @staticmethod
     def should_evaluate(callbacks):
         return "evaluate_l1" in callbacks or "evaluate_fid" in callbacks
+
+    @abstractmethod
+    def get_annealing_layers(self):
+        """
+        Returns the layers that will be used for palette quantization annealing.
+
+        Returns:
+            A list of layers that will be used for palette quantization annealing. They should have
+            a `temperature` attribute
+        """
+        pass
 
     @abstractmethod
     def train_step(self, batch, step, update_steps, t):
@@ -237,6 +276,66 @@ class S2SModel(ABC):
     @abstractmethod
     def generate_images_for_evaluation(self, example_indices_for_evaluation):
         pass
+
+    def extract_palette(self, images):
+        """
+        Extracts the palette from a batch of images. It assumes the images are in [-1, 1] range.
+
+        Args:
+            images (tf.Tensor): A batch of images of shape (batch, height, width, channels) or
+            (batch, domains, height, width, channels).
+
+        Returns:
+            A tensor of shape (batch, num_colors, channels) containing the extracted palettes,
+            or one with a single zero color, in case we're not using palette quantization.
+
+        """
+        return self.palette_extractor.extract(images)
+
+    def extract_palette_dense(self, images):
+        """
+        Extracts the palette from a batch of images. It assumes the images are in [-1, 1] range.
+
+        Args:
+            images (tf.Tensor): A batch of images of shape (batch, height, width, channels) or
+            (batch, domains, height, width, channels).
+
+        Returns:
+            A tensor of shape (batch, num_colors, channels) containing the extracted palettes,
+            or one with a single zero color, in case we're not using palette quantization.
+
+        """
+        return self.palette_extractor_dense.extract(images)
+
+    def calculate_palette_loss(self, images, palettes, temperature):
+        """
+        Calculates the palette loss between a batch of images and their corresponding palettes.
+
+        Args:
+            images (tf.Tensor): A batch of images of shape (batch, height, width, channels) or
+            (batch, domains, height, width, channels).
+            palettes (tf.Tensor): A batch of palettes of shape (batch, num_colors, channels).
+            temperature (tf.Tensor): A scalar tensor representing the current temperature for annealing.
+
+        Returns:
+            A scalar tensor representing the palette loss, or zero if not using palette quantization.
+        """
+        return self.palette_loss_calculator.calculate(images, palettes, temperature)
+
+    def calculate_palette_loss_dense(self, images, palettes, temperature):
+        """
+        Calculates the palette loss between a batch of images and their corresponding palettes.
+
+        Args:
+            images (tf.Tensor): A batch of images of shape (batch, height, width, channels) or
+            (batch, domains, height, width, channels).
+            palettes (tf.Tensor): A batch of palettes of shape (batch, num_colors, channels).
+            temperature (tf.Tensor): A scalar tensor representing the current temperature for annealing.
+
+        Returns:
+            A scalar tensor representing the palette loss, or zero if not using palette quantization.
+        """
+        return self.palette_loss_calculator_dense.calculate(images, palettes, temperature)
 
     def evaluate_l1(self, real_image, fake_image):
         return tf.reduce_mean(tf.abs(fake_image - real_image))

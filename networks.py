@@ -1,7 +1,7 @@
 import tensorflow as tf
 from tensorflow.keras import layers
-from configuration import *
-from tensorflow_addons import layers as tfalayers
+
+import keras_utils
 
 
 def unet_downsample(filters, size, apply_batchnorm=True, init=tf.random_normal_initializer(0., 0.02)):
@@ -15,7 +15,7 @@ def unet_downsample(filters, size, apply_batchnorm=True, init=tf.random_normal_i
         kernel_initializer=init,
         use_bias=False))
     if apply_batchnorm:
-        result.add(tfalayers.InstanceNormalization())
+        result.add(layers.GroupNormalization(groups=filters))
     result.add(layers.LeakyReLU())
 
     return result
@@ -26,7 +26,7 @@ def unet_upsample(filters, size, apply_dropout=False, init=tf.random_normal_init
     result.add(
         layers.Conv2DTranspose(filters, size, strides=2, padding="same", kernel_initializer=init, use_bias=False))
 
-    result.add(tfalayers.InstanceNormalization())
+    result.add(layers.GroupNormalization(groups=filters))
 
     if apply_dropout:
         result.add(layers.Dropout(0.5))
@@ -50,7 +50,8 @@ def PatchDiscriminator(image_size, inner_channels):
     return tf.keras.Model(inputs=[target_image, source_image], outputs=last, name="patch-disc")
 
 
-def UnetGenerator(image_size, inner_channels, output_channels, last_activation):
+def UnetGenerator(image_size, inner_channels, output_channels, last_activation,
+                  palette_quantization=False, temperature=1.0):
     init = tf.random_normal_initializer(0., 0.02)
     inputs = layers.Input(shape=[image_size, image_size, inner_channels])               # (batch_size, 64, 64, 4/3/max_palette_size)
 
@@ -95,4 +96,14 @@ def UnetGenerator(image_size, inner_channels, output_channels, last_activation):
 
     x = last(x)
 
-    return tf.keras.Model(inputs=inputs, outputs=x, name="unet-gen")
+    if palette_quantization:
+        input_palette = layers.Input(shape=[None, output_channels], name="input-palette")
+        inputs = [inputs, input_palette]
+
+        quantization_layer = keras_utils.DifferentiablePaletteQuantization(temperature)
+        x = quantization_layer([x, input_palette])
+        model = tf.keras.Model(inputs=inputs, outputs=x, name="unet-gen-quantized")
+        model.quantization = quantization_layer
+    else:
+        model = tf.keras.Model(inputs=inputs, outputs=x, name="unet-gen")
+    return model

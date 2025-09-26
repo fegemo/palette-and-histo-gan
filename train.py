@@ -1,14 +1,44 @@
+import os
 import sys
-
+import logging
 import tensorflow as tf
-from math import ceil
+from configuration import OptionParser
+
+# instructs matplotlib to use a tmp folder that is outside the network storage on verlab
+os.environ[ 'MPLCONFIGDIR' ] = '/tmp/'
+
+logging.basicConfig(
+    format="%(asctime)s %(levelname)-8s %(message)s",
+    level=logging.DEBUG,
+    datefmt="%Y-%m-%d %H:%M:%S")
+logging.getLogger("matplotlib").setLevel(logging.WARNING)
+logging.getLogger("PIL").setLevel(logging.WARNING)
+
+config, parser = OptionParser().parse(sys.argv[1:], True)
+logging.info(f"Running with options: {OptionParser.get_description(config, ', ', ':')}")
+
+# configures GPU VRAM usage according to config.vram (limit, default behavior or allow growth on demand)
+gpus = tf.config.list_physical_devices("GPU")
+requested_gpu = config.gpu
+if gpus:
+    tf.config.set_visible_devices(gpus[requested_gpu], "GPU")
+    if config.vram == -1:
+        tf.config.experimental.set_memory_growth(gpus[requested_gpu], True)
+    elif config.vram == 0:
+        # do nothing -- allow tf to allocate as much as it wants at once
+        pass
+    else:
+        # put a hard limit on the VRAM usage
+        tf.config.set_logical_device_configuration(
+            gpus[requested_gpu],
+            [tf.config.LogicalDeviceConfiguration(memory_limit=config.vram)]
+        )
 
 from dataset_utils import load_rgba_ds, load_indexed_ds
-from configuration import OptionParser
 from pix2pix_model import Pix2PixModel, Pix2PixAugmentedModel, Pix2PixIndexedModel, Pix2PixHistogramModel
 import setup
 
-config, parser = OptionParser().parse(sys.argv[1:], True)
+
 if config.verbose:
     print("Running with options: ", config)
     print("Tensorflow version: ", tf.__version__)
@@ -17,6 +47,7 @@ if config.verbose:
         print("Default GPU: {}".format(tf.test.gpu_device_name()))
     else:
         print("Not using a GPU - it will take long!!")
+
 
 # check if datasets need unzipping
 if config.verbose:
@@ -58,7 +89,7 @@ model.save_model_description(model.get_output_folder())
 if config.verbose:
     model.discriminator.summary()
     model.generator.summary()
-parser.save_configuration(model.get_output_folder())
+parser.save_configuration(model.get_output_folder(), sys.argv)
 
 # configuration for training
 steps = config.steps
