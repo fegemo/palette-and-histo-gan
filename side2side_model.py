@@ -4,11 +4,13 @@ import time
 import logging
 import gc
 import os
+import sys
 import tensorflow as tf
 from matplotlib import pyplot as plt
 
 import io_utils
 import frechet_inception_distance as fid
+from configuration import OptionParser
 from functional_utils import listify
 from keras_utils import LinearAnnealingScheduler, CosineAnnealingScheduler, ExpCosineAnnealingSchedule, \
     NoopAnnealingScheduler, count_network_parameters
@@ -149,6 +151,15 @@ class S2SModel(ABC):
                 tf.summary.experimental.write_raw_pb(
                     self.layout_summary.SerializeToString(), step=0)
 
+            # initializes tensorboard utilities for logging training statistics
+            self.summary_writer = tf.summary.create_file_writer(self.get_output_folder())
+            with self.summary_writer.as_default():
+                tf.summary.experimental.write_raw_pb(
+                    self.layout_summary.SerializeToString(), step=0)
+                tf.summary.text("configuration",
+                                f"# Command\n`python {' '.join(sys.argv)}`\n\n# Configuration\n    " + OptionParser.get_description(self.config, "\n    ", "=") + "\n",
+                                step=0)
+
             # initialize training metrics (used for saving the best model according to FID or L1)
             self.training_metrics = dict({
                 "fid": dict({
@@ -188,6 +199,13 @@ class S2SModel(ABC):
             it_is_time_to_evaluate = (step + 1) % evaluate_steps == 0 or step == 0 or step == steps - 1
             if it_is_time_to_evaluate:
                 if step != 0:
+                    if self.config.evalulate:
+                        reached_two_thirds_of_training = step >= (2 * steps) // 3
+                        if reached_two_thirds_of_training:
+                            logging.info("\nReached two-thirds of training, starting to evaluate more frequently (4x).")
+                            evaluate_steps //= 4
+                            self.config.evalulate = False
+
                     print("\n")
                     show_eta(training_start_time, step_start_time, step, starting_step, steps, evaluate_steps)
 

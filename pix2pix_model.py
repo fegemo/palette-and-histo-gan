@@ -1,4 +1,5 @@
 import os
+import logging
 
 import tensorflow_io as tfio
 import numpy as np
@@ -313,7 +314,7 @@ class Pix2PixModel(S2SModel):
             fig = self.preview_generated_images_during_training([[*batch]], image_path, step)
             plt.close(fig)
 
-        print(f"Generated {i + 1} images in the test-images folder.")
+        logging.info(f"Generated {i + 1} images in the test-images folder.")
 
     def debug_discriminator_output(self, batch, image_path):
         c = self.config

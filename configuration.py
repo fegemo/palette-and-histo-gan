@@ -149,6 +149,7 @@ class OptionParser(metaclass=SingletonMeta):
                                  help="every few update steps, evaluate with the L1 metric the performance "
                                       "on the train and test sets",
                                  default=False, action="store_true")
+        self.parser.add_argument("--evalulate", action="store_true", default=False, help="evaluates 4x after 2/3 of training")
         self.parser.add_argument("--save-last-model", help="saves the model at the end instead of the best one", default=False, action="store_true")
         self.parser.add_argument("--model-name", help="architecture name", default="some-architecture")
         self.parser.add_argument("--experiment", help="description of this experiment", default="playground")
