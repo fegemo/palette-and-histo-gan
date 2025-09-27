@@ -109,7 +109,7 @@ class DifferentiablePaletteQuantization(tf.keras.layers.Layer):
 
 
 class AnnealingScheduler(ABC):
-    def __init__(self, annealing_layers=None, min_temperature=0.00001):
+    def __init__(self, annealing_layers=None, min_temperature=0.015):
         if annealing_layers is None:
             annealing_layers = []
         self.annealing_layers = annealing_layers
