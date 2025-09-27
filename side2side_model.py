@@ -8,6 +8,7 @@ import tensorflow as tf
 
 import io_utils
 import frechet_inception_distance as fid
+from functional_utils import listify
 from keras_utils import LinearAnnealingScheduler, CosineAnnealingScheduler, ExpCosineAnnealingSchedule, \
     NoopAnnealingScheduler, count_network_parameters
 from palette_utils import PaletteExtractor, PaletteExtractorDense, PaletteLossCalculator, PaletteLossCalculatorDense, \
@@ -29,7 +30,8 @@ def show_eta(training_start_time, step_start_time, current_step, training_starti
 
 
 class S2SModel(ABC):
-    def __init__(self, config):
+    def __init__(self, config, export_additional_training_endpoint=False):
+        self.export_additional_training_endpoint = export_additional_training_endpoint
         self.generator_optimizer = None
         self.discriminator_optimizer = None
 
@@ -54,13 +56,32 @@ class S2SModel(ABC):
         self.palette_loss_calculator = PaletteLossCalculator() if config.palette_quantization else NoopPaletteLossCalculator()
         self.palette_loss_calculator_dense = PaletteLossCalculatorDense() if config.palette_quantization else NoopPaletteLossCalculator()
 
-        self.discriminator = self.create_discriminator()
-        self.generator = self.create_generator()
+        # initializes networks inside two dicts: one for training only and another for inference (e.g., generator)
+        # each dict has keys for the network type (e.g., generator) and values as the network itself (or network list)
+        self.training_only_networks = self.create_training_only_networks()
+        self.inference_networks = self.create_inference_networks()
 
-        generator_params = count_network_parameters(self.generator)
-        discriminator_params = count_network_parameters(self.discriminator)
-        logging.info(f"Generator: {self.generator.name} with {generator_params:,} parameters")
-        logging.info(f"Discriminator: {self.discriminator.name} with {discriminator_params:,} parameters")
+        # count number of params in all training_only_networks and inference_networks
+        training_only_parameters = {
+            group: sum([count_network_parameters(network) for network in listify(networks)])
+            for group, networks
+            in self.training_only_networks.items()
+        }
+        total_training_only_parameters = sum(training_only_parameters.values())
+        inference_parameters = {
+            group: sum([count_network_parameters(network) for network in listify(networks)])
+            for group, networks
+            in self.inference_networks.items()
+        }
+        total_inference_parameters = sum(inference_parameters.values())
+        logging.debug(f"Training-only Networks: {total_training_only_parameters:,} parameters")
+        if len(training_only_parameters.keys()) > 1:
+            for group in training_only_parameters.keys():
+                logging.debug(f"\t{group}: {training_only_parameters[group]:,} parameters")
+        logging.debug(f"Inference Networks: {total_inference_parameters:,} parameters")
+        if len(inference_parameters.keys()) > 1:
+            for group in inference_parameters.keys():
+                logging.debug(f"\t{group}: {inference_parameters[group]:,} parameters")
 
         # if config.palette_quantization, initialize the proper annealing scheduler
         if config.palette_quantization:
@@ -392,16 +413,71 @@ class S2SModel(ABC):
         file.write(str(step.numpy()))
 
     def save_generator(self):
-        py_model_path = self.get_output_folder(["models", "py", "generator"], True)
+        def export_single_model(net, path):
+            """
+            Exports a single model to a specified path. It uses the recent and custom way of exporting models in
+            Keras/TensorFlow. It exports a 'serve' endpoint and an optional 'serve_training' with training=True, if
+            requested by the model (self.export_additional_training_endpoint).
+            :param net: the network to save.
+            :param path: the path where to save it.
+            """
+            export_archive = tf.keras.export.ExportArchive()
+            export_archive.track(net)
+            input_signature = [{kt.name: kt for kt in net.inputs}]
+            # This check of version is necessary if we're in an older keras<3 environment such as the one needed in
+            # some Verlab machines (those that have Compute Capability<6) TODO terrible way of depending on lib
+            #  version. Plus, using string comparison rather than integer. Remove this check entirely when we can use
+            #  only machines with Compute Capability>=6
+            if tf.__version__ < "2.18.0":
+                input_signature = [[tf.TensorSpec(shape=kt.shape, dtype=kt.dtype, name=kt.name)
+                                    for kt in net.inputs]]
+            export_archive.add_endpoint(name="serve", fn=net.call, input_signature=input_signature)
+            if self.export_additional_training_endpoint:
+                export_archive.add_endpoint(
+                    name="serve_training",
+                    fn=lambda x: net.call(x, training=True),
+                    input_signature=input_signature
+                )
+            # another version sniffing in place because of the 2.16 vs 2.18 needed to run in different environments
+            if tf.__version__ < "2.18.0":
+                export_archive.write_out(path)
+            else:
+                export_archive.write_out(path, verbose=self.config.verbose)
+
+        py_model_path = self.get_output_folder(["models"], )
         io_utils.delete_folder(py_model_path)
         io_utils.ensure_folder_structure(py_model_path)
 
-        self.generator.save(py_model_path)
+        if len(self.inference_networks) == 1:
+            # only has a single group (probably called "generators"),
+            # but there can be a single generator or many networks inside it (i.e., a list of generators)
+            generators = list(self.inference_networks.values())[0]
+            if isinstance(generators, list) and len(generators) > 1:
+                for generator in generators:
+                    generator_name = generator.name
+                    py_model_path = self.get_output_folder(["models", generator_name])
+                    # generator.export(py_model_path, verbose=self.config.verbose)
+                    export_single_model(generator, py_model_path)
+            else:
+                py_model_path = self.get_output_folder(["models"])
+                # generators.export(py_model_path, verbose=self.config.verbose)
+                export_single_model(generators, py_model_path)
+        else:
+            # there are multiple groups of networks (e.g., "style_encoders" and "content_encoders")
+            for group, networks in self.inference_networks.items():
+                if isinstance(networks, list) and len(networks) > 1:
+                    for network in networks:
+                        network_name = network.name
+                        py_model_path = self.get_output_folder(["models", group, network_name])
+                        network.export(py_model_path)
+                else:
+                    py_model_path = self.get_output_folder(["models", group])
+                    networks.export(py_model_path)
         self.save_model_description(py_model_path)
 
     def load_generator(self):
-        py_model_path = self.get_output_folder(["models", "py", "generator"], True)
-        self.generator = tf.keras.models.load_model(py_model_path)
+        py_model_path = self.get_output_folder(["models"])
+        self.inference_networks = tf.keras.models.load_model(py_model_path)
 
     @abstractmethod
     def generate_images_from_dataset(self, dataset, step, num_images=None):
@@ -458,9 +534,22 @@ class S2SModel(ABC):
         )
 
     @abstractmethod
-    def create_discriminator(self):
+    def create_training_only_networks(self):
+        """
+        Creates the networks that are necessary only during training (i.e., the discriminator(s)).
+
+        Returns:
+            A dictionary containing the training-only networks.
+        """
         pass
 
     @abstractmethod
-    def create_generator(self):
+    def create_inference_networks(self):
+        """
+        Creates the networks used for inference (i.e., the generator(s)).
+
+        Returns:
+            A dictionary containing the inference networks.
+        """
         pass
+

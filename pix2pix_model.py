@@ -68,15 +68,19 @@ class PostProcessGenerator(tf.keras.Model):
 
 class Pix2PixModel(S2SModel):
     def __init__(self, config):
+        self.discriminator = None
+        self.proxy_generator = None
+        self.generator = None
+        self.gen_supplier = NParamsSupplier(2 if config.palette_quantization else 1)
+
         super().__init__(config)
 
-        self.gen_supplier = NParamsSupplier(2 if config.palette_quantization else 1)
         self.lambda_l1 = config.lambda_l1
         self.lambda_palette = config.lambda_palette
         self.loss_object = tf.keras.losses.BinaryCrossentropy(from_logits=True)
 
 
-    def create_generator(self):
+    def create_inference_networks(self):
         config = self.config
         real_generator = UnetGenerator(config.image_size, config.inner_channels, config.output_channels,
                                        "tanh", config.palette_quantization, config.temperature)
@@ -84,11 +88,17 @@ class Pix2PixModel(S2SModel):
             self.proxy_generator = PostProcessGenerator(real_generator, self.config.post_process)
         else:
             self.proxy_generator = real_generator
-        return real_generator
+        self.generator = self.proxy_generator
+        return {
+            "generator": self.proxy_generator
+        }
 
-    def create_discriminator(self):
+    def create_training_only_networks(self):
         config = self.config
-        return PatchDiscriminator(config.image_size, config.inner_channels)
+        self.discriminator = PatchDiscriminator(config.image_size, config.inner_channels)
+        return {
+            "discriminator": self.discriminator
+        }
 
     def get_annealing_layers(self):
         return [self.generator.quantization] if self.config.palette_quantization else []

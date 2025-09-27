@@ -97,7 +97,7 @@ def UnetGenerator(image_size, inner_channels, output_channels, last_activation,
     x = last(x)
 
     if palette_quantization:
-        input_palette = layers.Input(shape=[None, output_channels], name="input-palette")
+        input_palette = layers.Input(shape=[None, output_channels], name="input_palette")
         inputs = [inputs, input_palette]
 
         quantization_layer = keras_utils.DifferentiablePaletteQuantization(temperature)
