@@ -406,22 +406,23 @@ class Pix2PixHistogramModel(Pix2PixAugmentedModel):
         else:
             raise Exception(f"Unrecognized histogram loss passed to the model: {config.histo_loss}")
 
-    def generator_loss(self, fake_predicted, fake_image, real_image):
+    def generator_loss(self, fake_predicted, fake_image, real_image, palette, temperature):
         real_histogram = histogram.calculate_rgbuv_histogram(real_image)
         fake_histogram = histogram.calculate_rgbuv_histogram(fake_image)
         histogram_loss = self.histo_loss(real_histogram, fake_histogram)
 
-        total_loss, adversarial_loss, l1_loss = super().generator_loss(fake_predicted, fake_image, real_image)
+        total_loss, adversarial_loss, l1_loss, palette_loss = super().generator_loss(fake_predicted, fake_image,
+                                                                                     real_image, palette, temperature)
         total_loss += self.lambda_histogram * histogram_loss
 
-        return total_loss, adversarial_loss, l1_loss, histogram_loss
+        return total_loss, adversarial_loss, l1_loss, palette_loss, histogram_loss
 
     def discriminator_loss(self, real_predicted, fake_predicted):
         return super().discriminator_loss(real_predicted, fake_predicted)
 
     def log_generator_loss(self, g_loss, step):
-        _, _, _, histogram_loss = g_loss
-        super().log_generator_loss(g_loss[:3], step)
+        _, _, _, _, histogram_loss = g_loss
+        super().log_generator_loss(g_loss[:4], step)
         tf.summary.scalar("histogram_loss", histogram_loss, step=step)
 
 
