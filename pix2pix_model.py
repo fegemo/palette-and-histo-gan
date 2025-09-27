@@ -275,7 +275,7 @@ class Pix2PixModel(S2SModel):
                 idx = i * num_columns + j + 1
                 plt.subplot(num_images, num_columns, idx)
                 plt.title(title[j] if i == 0 else "", fontdict={"fontsize": 24})
-                plt.imshow(images[j][0] * 0.5 + 0.5)
+                plt.imshow(np.clip(images[j][0] * 0.5 + 0.5, 0, 1))
                 plt.axis("off")
 
             histograms = [source_image_histograms[i], target_image_histograms[i], predicted_images_histograms[i]]
