@@ -5,6 +5,7 @@ import logging
 import gc
 import os
 import tensorflow as tf
+from matplotlib import pyplot as plt
 
 import io_utils
 import frechet_inception_distance as fid
@@ -221,7 +222,8 @@ class S2SModel(ABC):
                     logging.StreamHandler().terminator = "\n"
                     l1_train, l1_test = self.report_l1(examples_for_evaluation, step=(step + 1) // evaluate_steps)
                     logging.info(f" L1: {l1_train:.5f} / {l1_test:.5f} (train/test)")
-                    self.update_training_metrics("l1", l1_test, step + 1, True)
+                    # self.update_training_metrics("l1", l1_test, step + 1, True)
+                    self.update_training_metrics("l1", l1_test, step + 1, "evaluate_fid" not in callbacks)
 
                 if "evaluate_fid" in callbacks:
                     logging.info(
@@ -229,7 +231,8 @@ class S2SModel(ABC):
                         f"examples...")
                     fid_train, fid_test = self.report_fid(examples_for_evaluation, step=(step + 1) // evaluate_steps)
                     logging.info(f"FID: {fid_train:.3f} / {fid_test:.3f} (train/test)")
-                    self.update_training_metrics("fid", fid_test, step + 1, "evaluate_l1" not in callbacks)
+                    # self.update_training_metrics("fid", fid_test, step + 1, "evaluate_l1" not in callbacks)
+                    self.update_training_metrics("fid", fid_test, step + 1, True)
 
                 if S2SModel.should_evaluate(callbacks) and it_is_time_to_evaluate:
                     # free the memory used by the generated examples
@@ -248,6 +251,16 @@ class S2SModel(ABC):
             # dot feedback for every 10 training steps
             if (step + 1) % 10 == 0 and step - starting_step < steps - 1:
                 print(".", end="", flush=True)
+
+            # log temperature if palette quantization is used
+            if self.config.palette_quantization:
+                with self.summary_writer.as_default():
+                    tf.summary.scalar(f"generator/temperature", self.get_annealing_layers()[0].temperature,
+                                      step=step)
+            self.summary_writer.flush()
+
+            # close possibly images that remained open
+            plt.close("all")
 
         logging.info("\nAbout to exit the training loop...")
 

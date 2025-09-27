@@ -109,13 +109,14 @@ class DifferentiablePaletteQuantization(tf.keras.layers.Layer):
 
 
 class AnnealingScheduler(ABC):
-    def __init__(self, annealing_layers=None):
+    def __init__(self, annealing_layers=None, min_temperature=0.00001):
         if annealing_layers is None:
             annealing_layers = []
         self.annealing_layers = annealing_layers
+        self.min_temperature = min_temperature
 
     def update(self, t):
-        new_temperature = self.get_value(t)
+        new_temperature = tf.maximum(self.get_value(t), self.min_temperature)
         for l in self.annealing_layers:
             l.temperature.assign(new_temperature)
         return new_temperature
